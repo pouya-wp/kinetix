@@ -1113,10 +1113,16 @@ KX._evalExpr = function (comp, expr) {
   } finally { n.remove(); }
 };
 
+/** The Kinetix rig null is tagged with comment "kx-rig" (names alone are ambiguous). */
+KX._isRig = function (L) { return L.comment === 'kx-rig'; };
 KX._rig = function (comp) {
   var sel = comp.selectedLayers;
-  for (var i = 0; i < sel.length; i++) if (sel[i].name.indexOf(KX.RIG) === 0) return sel[i];
-  for (var j = 1; j <= comp.numLayers; j++) if (comp.layer(j).name.indexOf(KX.RIG) === 0) return comp.layer(j);
+  for (var i = 0; i < sel.length; i++) {
+    // a selected rig, or any layer that belongs to a rig (tilt / shake / camera)
+    var L = sel[i];
+    while (L) { if (KX._isRig(L)) return L; L = L.parent; }
+  }
+  for (var j = 1; j <= comp.numLayers; j++) if (KX._isRig(comp.layer(j))) return comp.layer(j);
   return null;
 };
 
@@ -1149,8 +1155,18 @@ KX.camScene = function () {
     var g = function (n) { try { return KX._slv(rig, n).valueAtTime(comp.time, false); } catch (e) { return 0; } };
     res.rig = { name: rig.name, pos: pos, distance: g('Distance'), orbit: g('Orbit'), tilt: g('Tilt'), roll: g('Roll'), focal: g('Focal Length (mm)'), pan: g('Pan'), look: g('Look'), overshoot: g('Overshoot') };
   }
+  // camera world position, computed without touching the comp (keeps the selection and undo clean)
   var cam = KX._cam(comp);
-  res.cam = cam ? KX._evalExpr(comp, 'var C=thisComp.layer(' + KXJSON.stringify(cam.name) + ');C.toWorld([0,0,0]);') : [comp.width / 2, comp.height / 2, -comp.width * 50 / 36];
+  if (res.rig) {
+    var R = res.rig, d = R.distance, tl = -R.tilt * Math.PI / 180, ob = R.orbit * Math.PI / 180;
+    var y1 = d * Math.sin(tl), z1 = -d * Math.cos(tl);
+    res.cam = [R.pos[0] + z1 * Math.sin(ob), R.pos[1] + y1, R.pos[2] + z1 * Math.cos(ob)];
+  } else if (cam) {
+    var cp = cam.property('ADBE Transform Group').property('ADBE Position').valueAtTime(comp.time, false);
+    res.cam = [cp[0], cp[1], cp.length > 2 ? cp[2] : 0];
+  } else res.cam = [comp.width / 2, comp.height / 2, -comp.width * 50 / 36];
+  res.hasCamera = !!cam;
+  res.twoD = 0;
   for (var i = 1; i <= comp.numLayers; i++) {
     var L = comp.layer(i);
     if (L instanceof CameraLayer) { res.cameras.push({ index: i, name: L.name, active: comp.activeCamera === L }); continue; }
@@ -1163,6 +1179,7 @@ KX.camScene = function () {
     var s = tf.property('ADBE Scale').valueAtTime(comp.time, false);
     var rot = [0, 0, 0];
     try { rot = [tf.property('ADBE Rotate X').valueAtTime(comp.time, false), tf.property('ADBE Rotate Y').valueAtTime(comp.time, false), tf.property('ADBE Rotate Z').valueAtTime(comp.time, false)]; } catch (e3) {}
+    if (!L.threeDLayer && !L.adjustmentLayer && L.enabled) res.twoD++;
     res.layers.push({ index: i, name: L.name, threeD: L.threeDLayer, pos: [p[0], p[1], p.length > 2 ? p[2] : 0], scale: [s[0], s[1], s.length > 2 ? s[2] : 100], rot: rot, w: r.width, h: r.height, sel: L.selected, kind: L instanceof TextLayer ? 'text' : L instanceof ShapeLayer ? 'shape' : 'footage' });
   }
   return res;
@@ -1187,7 +1204,17 @@ KX.camRig = function (p) {
   app.beginUndoGroup('Kinetix Camera Rig');
   var name = KX._uniqueName(comp, KX.RIG);
   var L = '"' + name + '"';
+  // a camera only affects 3D layers: switch the comp's visible layers to 3D (optional)
+  if (p.make3D !== false) {
+    for (var m = 1; m <= comp.numLayers; m++) {
+      var ML = comp.layer(m);
+      if (ML instanceof CameraLayer || ML instanceof LightLayer || ML.adjustmentLayer || ML.guideLayer || !ML.enabled) continue;
+      if (ML.hasVideo && !ML.threeDLayer) try { ML.threeDLayer = true; } catch (e3d) {}
+    }
+  }
+  var keepSel = comp.selectedLayers;
   var rig = KX._newNull3D(comp, name, null);
+  rig.comment = 'kx-rig';
   rig.property('ADBE Transform Group').property('ADBE Position').setValue([comp.width / 2, comp.height / 2, 0]);
   var mm = p.lens || 50;
   var zoom = comp.width * mm / 36;
@@ -1219,6 +1246,9 @@ KX.camRig = function (p) {
   // hide helper nulls from the timeline clutter
   tilt.shy = true; shake.shy = true;
   cam.moveToBeginning(); rig.moveToBeginning();
+  // give the user their selection back
+  for (var d = 1; d <= comp.numLayers; d++) comp.layer(d).selected = false;
+  for (var ks = 0; ks < keepSel.length; ks++) try { keepSel[ks].selected = true; } catch (eK) {}
   app.endUndoGroup();
   return { rig: name, existed: false };
 };
@@ -1355,9 +1385,11 @@ KX.camLayout = function (p) {
 
 KX.camMake3D = function (p) {
   var comp = KX._comp(null, false);
-  var sel = comp.selectedLayers, n = 0;
+  var sel = [], n = 0;
+  if (p.all) { for (var j = 1; j <= comp.numLayers; j++) { var Lj = comp.layer(j); if (Lj.hasVideo && !Lj.adjustmentLayer && Lj.name.indexOf('KX Camera') !== 0) sel.push(Lj); } }
+  else sel = comp.selectedLayers;
   app.beginUndoGroup('Kinetix 3D');
-  for (var i = 0; i < sel.length; i++) { if (sel[i] instanceof CameraLayer || sel[i] instanceof LightLayer) continue; sel[i].threeDLayer = p.on; n++; }
+  for (var i = 0; i < sel.length; i++) { if (sel[i] instanceof CameraLayer || sel[i] instanceof LightLayer) continue; try { sel[i].threeDLayer = p.on; n++; } catch (e) {} }
   app.endUndoGroup();
   return { layers: n };
 };

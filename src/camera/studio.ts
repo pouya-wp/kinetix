@@ -13,6 +13,8 @@ interface Scene {
   cameras: { index: number; name: string; active: boolean }[];
   layers: SceneLayer[];
   cam: number[];
+  twoD?: number;
+  hasCamera?: boolean;
 }
 
 const LS = 'kinetix.camera';
@@ -177,6 +179,10 @@ export class CameraStudio implements Studio {
   private renderRig() {
     const box = this.rigBox;
     box.innerHTML = '';
+    const n2 = this.scene?.twoD ?? 0;
+    if (n2 > 0) box.append(h('div', { class: 'panel-card', style: { background: 'rgba(255,90,95,.08)' } },
+      h('div', { class: 'hint', style: { color: '#ffb4b6' } }, `${n2} layer(s) are 2D — a camera only moves 3D layers.`),
+      Btn('Make all layers 3D', () => this.act('camMake3D', { on: true, all: true }, 'All layers are 3D now'), { size: 'sm', variant: 'soft' })));
     const r = this.scene?.rig;
     if (!r) { box.append(h('div', { class: 'empty' }, 'No Smart Rig in this comp yet.')); return; }
     box.append(h('div', { class: 'lbl' }, 'Rig · ' + r.name));
