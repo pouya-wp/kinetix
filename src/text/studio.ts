@@ -207,7 +207,7 @@ export class TextStudio implements Studio {
       Toggle('Disable original text layers', () => T().disableOriginals, (v) => store.set((s) => { s.text.disableOriginals = v; })),
       Btn('Build Text Morph precomp', () => this.build(), { variant: 'primary', size: 'lg', block: true, icon: 'send' }),
       this.progress,
-      h('div', { class: 'hint' }, 'Creates one precomp with a layer per line, a separate Text Box layer and a Controls null (colours, padding, roundness). Apply any effect to the text or the box.'),
+      h('div', { class: 'hint' }, 'Creates a TextMorph precomp (text + Controls null) and, right under it in your comp, a separate KX TextBox layer with its own size/roundness sliders — make it an adjustment layer or add any effect.'),
     ], { color: 'var(--lime)' });
   }
 

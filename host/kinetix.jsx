@@ -519,6 +519,7 @@ KX.textFromSRT = function (p) {
 
 KX.textBegin = function (h) {
   var main = KX._comp(h.comp, false);
+  KX._textBoxLayer = null;
   app.beginUndoGroup('Kinetix Text Morph');
   var dur = Math.max(main.duration, h.duration);
   var pc = app.project.items.addComp(h.name, main.width, main.height, main.pixelAspect, dur, main.frameRate);
@@ -529,11 +530,6 @@ KX.textBegin = function (h) {
   var fx = ctl.property('ADBE Effect Parade');
   var col = function (name, rgb) { var e = fx.addProperty('ADBE Color Control'); e.name = name; e.property('ADBE Color Control-0001').setValue([rgb[0], rgb[1], rgb[2], 1]); };
   col('Text Color', h.textColor);
-  col('Box Color', h.boxColor);
-  KX._slider(ctl, 'Box Opacity', h.boxOpacity);
-  KX._slider(ctl, 'Box Extra Width', 0);
-  KX._slider(ctl, 'Box Extra Height', 0);
-  KX._slider(ctl, 'Box Extra Roundness', 0);
   KX._slider(ctl, 'Text Opacity', 100);
   // all text lives in a source comp so the whole text can be re-timed (Timewarp) and coloured at once
   var sc = app.project.items.addComp(h.name + ' Text', main.width, main.height, main.pixelAspect, dur, main.frameRate);
@@ -543,7 +539,6 @@ KX.textBegin = function (h) {
 };
 
 KX._TEXT_FILL = 'thisComp.layer("KX Controls").effect("Text Color")("Color")';
-KX._BOX_FILL = 'thisComp.layer("KX Controls").effect("Box Color")("Color")';
 
 KX.textLine = function (compId, ln) {
   var pc = KX._compById(compId);
@@ -633,16 +628,21 @@ KX.textBaked = function (compId, b) {
   return true;
 };
 
+/** Text box lives in the MAIN comp (its own layer, own controls) so it can become an
+ *  adjustment layer, take a glass effect, track mattes, etc. */
 KX.textBox = function (compId, box, h) {
-  var pc = KX._compById(compId);
+  var main = KX._textMain ? KX._compById(KX._textMain) : KX._comp(null, false);
   app.beginUndoGroup('Kinetix Text Box');
-  var layer = pc.layers.addShape();
-  layer.name = 'KX TextBox';
+  var layer = main.layers.addShape();
+  layer.name = KX._uniqueName(main, 'KX TextBox');
   layer.label = 14;
   var tf = layer.property('ADBE Transform Group');
   tf.property('ADBE Anchor Point').setValue([0, 0]);
   tf.property('ADBE Position').setValue([0, 0]);
-  tf.property('ADBE Opacity').expression = 'thisComp.layer("KX Controls").effect("Box Opacity")("Slider")';
+  tf.property('ADBE Opacity').setValue(h.boxOpacity);
+  KX._slider(layer, 'Box Extra Width', 0);
+  KX._slider(layer, 'Box Extra Height', 0);
+  KX._slider(layer, 'Box Extra Roundness', 0);
   var grp = KX._group(KX._contents(layer), 'Box');
   var vec = KX._vectors(grp);
   var x = KX._xform(grp);
@@ -651,10 +651,10 @@ KX.textBox = function (compId, box, h) {
     rc.name = 'Rect';
     var size = rc.property('ADBE Vector Rect Size');
     KX._keys(size, box.size, 0, true);
-    size.expression = 'var c = thisComp.layer("KX Controls"); value + [c.effect("Box Extra Width")("Slider"), c.effect("Box Extra Height")("Slider")]';
+    size.expression = 'value + [effect("Box Extra Width")("Slider"), effect("Box Extra Height")("Slider")]';
     var rnd = rc.property('ADBE Vector Rect Roundness');
     KX._keys(rnd, box.round, 0, true);
-    rnd.expression = 'value + thisComp.layer("KX Controls").effect("Box Extra Roundness")("Slider")';
+    rnd.expression = 'value + effect("Box Extra Roundness")("Slider")';
     var gp = x.property('ADBE Vector Position');
     KX._keys(gp, box.pos, 0, true);
     KX._linearSpatial(gp);
@@ -663,11 +663,10 @@ KX.textBox = function (compId, box, h) {
     KX._pathKeys(vec, box.path, 0, 'Box Path');
   }
   KX._keys(x.property('ADBE Vector Group Opacity'), box.op, 0, true);
-  KX._fill(vec, [1, 1, 1]);
-  KX._layerFill(layer, h.boxColor, KX._BOX_FILL);
+  KX._fill(vec, h.boxColor);
   layer.inPoint = Math.max(0, box['in']);
-  layer.outPoint = Math.min(pc.duration, box.out + 1 / pc.frameRate);
-  layer.moveToEnd(); // box sits under all text
+  layer.outPoint = Math.min(main.duration, box.out + 1 / main.frameRate);
+  KX._textBoxLayer = layer;
   app.endUndoGroup();
   return true;
 };
@@ -682,10 +681,9 @@ KX.textFinish = function (compId, h, srcId) {
     tl.name = 'KX Text';
     tl.label = 2;
     tl.property('ADBE Transform Group').property('ADBE Opacity').expression = 'thisComp.layer("KX Controls").effect("Text Opacity")("Slider")';
-    KX._layerFill(tl, h.textColor, KX._TEXT_FILL);
+    // order matters: morph (Timewarp) first, then colour the result
     if (h.flow && h.flow.length) KX._flowTimewarp(tl, h.flow, sc);
-    var box = KX._byName(pc, 'KX TextBox');
-    if (box) { box.moveToEnd(); tl.moveBefore(box); }
+    KX._layerFill(tl, h.textColor, KX._TEXT_FILL);
   }
   var ctl = KX._byName(pc, 'KX Controls');
   if (ctl) ctl.moveToBeginning();
@@ -698,6 +696,7 @@ KX.textFinish = function (compId, h, srcId) {
   lay.name = 'Kinetix TextMorph';
   lay.startTime = 0;
   lay.label = 9;
+  if (KX._textBoxLayer) { try { KX._textBoxLayer.moveAfter(lay); } catch (eB) {} KX._textBoxLayer = null; }
   KX._ensureDuration(main, h.duration);
   main.openInViewer();
   app.endUndoGroup();
