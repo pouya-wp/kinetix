@@ -1814,3 +1814,112 @@ KX.sfxPlace = function (p) {
   app.endUndoGroup();
   return { layers: n };
 };
+
+// --------- Styles & gradients ---------
+KX._addFx = function (layer, alts) {
+  var fx = layer.property('ADBE Effect Parade');
+  for (var i = 0; i < alts.length; i++) {
+    try { if (fx.canAddProperty(alts[i])) return { fx: fx.addProperty(alts[i]), used: alts[i] }; } catch (e) {}
+  }
+  return null;
+};
+
+KX._clearStyle = function (L) {
+  var fx = L.property('ADBE Effect Parade');
+  for (var i = fx.numProperties; i >= 1; i--) if (fx.property(i).name.indexOf('KX Style') === 0 || fx.property(i).name.indexOf('KX Gradient') === 0) fx.property(i).remove();
+};
+
+KX.styleApply = function (p) {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, n = 0, missing = {};
+  if (!sel.length) throw new Error('Select one or more layers first.');
+  app.beginUndoGroup('Kinetix Style ' + p.name);
+  for (var s = 0; s < sel.length; s++) {
+    var L = sel[s];
+    if (L instanceof CameraLayer || L instanceof LightLayer) continue;
+    if (p.clear) KX._clearStyle(L);
+    for (var f = 0; f < p.fx.length; f++) {
+      var F = p.fx[f], got = KX._addFx(L, F.match);
+      if (!got) { missing[F.match[0]] = 1; continue; }
+      if (got.used !== F.match[0]) missing[F.match[0]] = 1;
+      var ef = got.fx;
+      ef.name = F.name;
+      if (got.used === 'ADBE Set Matte3') { try { ef.property(1).setValue(L.index); } catch (eS) {} }
+      if (F.props) for (var k in F.props) if (F.props.hasOwnProperty(k)) { var pr = KX._fxProp(ef, k); if (pr) try { pr.setValue(F.props[k]); } catch (e1) {} }
+      if (F.expr) for (var x in F.expr) if (F.expr.hasOwnProperty(x)) { var xp = KX._fxProp(ef, x); if (xp) try { xp.expression = F.expr[x]; } catch (e2) {} }
+    }
+    if (p.text && L instanceof TextLayer) {
+      var tp = L.property('ADBE Text Properties').property('ADBE Text Document'), td = tp.value;
+      if (p.text.stroke) { td.applyStroke = true; td.strokeColor = [p.text.stroke[0][0], p.text.stroke[0][1], p.text.stroke[0][2]]; td.strokeWidth = p.text.stroke[1]; try { td.strokeOverFill = false; } catch (e3) {} }
+      if (p.text.fill) { td.applyFill = true; td.fillColor = [p.text.fill[0], p.text.fill[1], p.text.fill[2]]; }
+      if (tp.numKeys === 0) tp.setValue(td);
+    }
+    if (p.extrude) {
+      try { comp.renderer = 'ADBE Advanced 3d'; } catch (e4) {}
+      L.threeDLayer = true;
+      try { L.property('ADBE Extrsn Options Group').property('ADBE Extrsn Depth').setValue(p.extrude); } catch (e5) {}
+    }
+    n++;
+  }
+  app.endUndoGroup();
+  var miss = [];
+  for (var m in missing) if (missing.hasOwnProperty(m)) miss.push(m);
+  return { layers: n, missing: miss };
+};
+
+/** Gradient on the selected layers: Ramp (2 colours), image matte (any gradient) or comp background. */
+KX.gradApply = function (p) {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, n = 0;
+  app.beginUndoGroup('Kinetix Gradient');
+  var item = null;
+  if (p.png) { item = app.project.importFile(new ImportOptions(new File(p.png))); item.parentFolder = KX._projFolder('Kinetix Gradients'); }
+  if (p.mode === 'background') {
+    var bg = comp.layers.add(item);
+    bg.name = KX._uniqueName(comp, 'KX Gradient BG - ' + p.name);
+    var sz = Math.max(comp.width, comp.height) * 1.5 / item.width * 100;
+    bg.property('ADBE Transform Group').property('ADBE Scale').setValue([sz, sz]);
+    bg.property('ADBE Transform Group').property('ADBE Position').setValue([comp.width / 2, comp.height / 2]);
+    if (p.animate) bg.property('ADBE Transform Group').property('ADBE Rotate Z').expression = '// KX-GRAD\nvalue+time*6;';
+    bg.moveToEnd();
+    app.endUndoGroup();
+    return { layers: 1 };
+  }
+  if (!sel.length) { app.endUndoGroup(); throw new Error('Select one or more layers first.'); }
+  for (var s = 0; s < sel.length; s++) {
+    var L = sel[s];
+    if (L instanceof CameraLayer || L instanceof LightLayer) continue;
+    if (p.mode === 'fill') {
+      KX._clearStyle(L);
+      var fx = L.property('ADBE Effect Parade');
+      var rp = fx.addProperty('ADBE Ramp'); rp.name = 'KX Gradient';
+      KX._fxProp(rp, 'Start Color').setValue(p.stops[0]);
+      KX._fxProp(rp, 'End Color').setValue(p.stops[p.stops.length - 1]);
+      KX._fxProp(rp, 'Ramp Shape').setValue(p.radial ? 2 : 1);
+      var a = (p.angle - 90) * Math.PI / 180;
+      KX._fxProp(rp, 'Start of Ramp').expression = '// KX-GRAD\nvar r=sourceRectAtTime(time,false),c=[r.left+r.width/2,r.top+r.height/2],R=Math.max(r.width,r.height)/2;' + (p.radial ? 'c;' : 'c-[Math.cos(' + a + '),Math.sin(' + a + ')]*R;');
+      KX._fxProp(rp, 'End of Ramp').expression = '// KX-GRAD\nvar r=sourceRectAtTime(time,false),c=[r.left+r.width/2,r.top+r.height/2],R=Math.max(r.width,r.height)/2;' + (p.radial ? 'c+[R,0];' : 'c+[Math.cos(' + a + '),Math.sin(' + a + ')]*R;');
+      var sm = fx.addProperty('ADBE Set Matte3'); sm.name = 'KX Gradient Matte';
+      sm.property(1).setValue(L.index);
+      KX._fxProp(sm, 'Use For Matte').setValue(4);
+    } else {
+      // gradient image above the layer, matted by it and following it
+      var g = comp.layers.add(item);
+      g.name = KX._uniqueName(comp, 'KX Gradient - ' + L.name);
+      g.moveBefore(L);
+      var r = L.sourceRectAtTime(comp.time, false), tf = L.property('ADBE Transform Group');
+      var pos = tf.property('ADBE Position').valueAtTime(comp.time, false), an = tf.property('ADBE Anchor Point').valueAtTime(comp.time, false), sc = tf.property('ADBE Scale').valueAtTime(comp.time, false);
+      var cx = pos[0] + (r.left + r.width / 2 - an[0]) * sc[0] / 100, cy = pos[1] + (r.top + r.height / 2 - an[1]) * sc[1] / 100;
+      var cover = Math.max(r.width * Math.abs(sc[0]), r.height * Math.abs(sc[1])) / 100 * 1.25 / item.width * 100;
+      if (L.threeDLayer) g.threeDLayer = true;
+      g.property('ADBE Transform Group').property('ADBE Position').setValue(L.threeDLayer ? [cx, cy, pos[2]] : [cx, cy]);
+      g.property('ADBE Transform Group').property('ADBE Scale').setValue([cover, cover]);
+      g.parent = L;
+      if (p.animate) g.property('ADBE Transform Group').property('ADBE Rotate Z').expression = '// KX-GRAD\nvalue+time*20;';
+      try { g.setTrackMatte(L, TrackMatteType.ALPHA); } catch (eT) { g.trackMatteType = TrackMatteType.ALPHA; }
+    }
+    n++;
+  }
+  app.endUndoGroup();
+  return { layers: n };
+};

@@ -307,6 +307,12 @@ export function Select<T extends string>(options: { value: T; label: string }[],
 }
 
 export const PALETTE = ['#d1fe17', '#ffffff', '#4cc9f0', '#b388ff', '#ff5a5f', '#ffb238', '#2ee59d', '#ff7ac6', '#1c1e20'];
+/** Brand Kit colours lead the swatch palette everywhere. */
+export function setPalette(colors: string[]) {
+  const base = ['#d1fe17', '#ffffff', '#4cc9f0', '#b388ff', '#ff5a5f', '#ffb238', '#2ee59d', '#ff7ac6', '#1c1e20'];
+  const merged = [...colors, ...base.filter((c) => !colors.includes(c))].slice(0, 9);
+  PALETTE.splice(0, PALETTE.length, ...merged);
+}
 
 export function ColorField(get: () => string, set: (v: string, final: boolean) => void, begin?: () => void) {
   const pick = h('input', { type: 'color' });

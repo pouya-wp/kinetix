@@ -53,3 +53,5 @@ registerMock('physBake', (p: any) => { console.log('[mock] physBake', p); return
 registerMock('sfxFolder', () => null);
 registerMock('sfxScan', () => [{ t: 0.5, dur: 0, kind: 'hit', strength: 0.8, x: 0.3, layer: 'Ball' }, { t: 1.2, dur: 0.8, kind: 'cam', strength: 0.6, x: 0.5, layer: 'Rig' }, { t: 2, dur: 0.3, kind: 'in', strength: 0.6, x: 0.7, layer: 'Title' }]);
 registerMock('sfxPlace', (p: any) => ({ layers: p.files.length }));
+registerMock('styleApply', (p: any) => { console.log('[mock] styleApply', p); return { layers: 1, missing: p.fx.some((f: any) => f.match[0].startsWith('Deep')) ? ['Deep Glow 2'] : [] }; });
+registerMock('gradApply', (p: any) => { console.log('[mock] gradApply', p); return { layers: 1 }; });
