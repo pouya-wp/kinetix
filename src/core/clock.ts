@@ -62,3 +62,4 @@ class Clock {
 }
 
 export const clock = new Clock();
+if (typeof window !== 'undefined') (window as any).__kxclock = clock;

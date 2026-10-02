@@ -19,6 +19,7 @@ export default defineConfig({
     target: 'chrome99',
     assetsInlineLimit: 0,
     modulePreload: false,
+    cssCodeSplit: false,
     rollupOptions: { output: { format: 'iife', inlineDynamicImports: true } },
   },
   server: { port: 5178, host: '127.0.0.1', strictPort: true },

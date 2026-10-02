@@ -127,10 +127,10 @@ function solverSource(o: BallObj) {
   return `// Kinetix Bounce — edit the numbers below. Each bounce row:
 // [x, y, arcHeight, travelTime, hangTime, hangEase%, squash, stretch, squashTime]
 var K = ${D};
-var ctl = thisLayer.effect("Kinetix Controls");
-var TS = ctl ? ctl("Time Scale")("Slider") / 100 : 1;
-var SQ = ctl ? ctl("Squash Amount")("Slider") / 100 : 1;
-var STR = ctl ? ctl("Stretch Amount")("Slider") / 100 : 1;
+function kxs(n, d) { try { return thisLayer.effect(n)("Slider").value; } catch (e) { return d; } }
+var TS = kxs("Time Scale", 100) / 100;
+var SQ = kxs("Squash Amount", 100) / 100;
+var STR = kxs("Stretch Amount", 100) / 100;
 function prof(s, he) { return Math.pow(s, 2 + he / 100 * 2.6); }
 function segs() {
   var out = [], t = K.delay, p = K.start;

@@ -176,7 +176,7 @@ export function initialState(): RootState {
 }
 
 export const store = new Store<RootState>(initialState());
-(window as any).__kx = store;
+if (typeof window !== "undefined") (window as any).__kx = store;
 
 // Persist the last scene so reopening the panel restores work.
 const LS = 'kinetix.scene.v1';
@@ -188,10 +188,10 @@ export function loadPersisted() {
     if (s) store.replace(s, false);
   } catch { /* ignore */ }
 }
-let saveTimer = 0;
+let saveTimer: any = 0;
 store.subscribe(() => {
   clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => {
+  saveTimer = setTimeout(() => {
     try { localStorage.setItem(LS, JSON.stringify(store.state)); } catch { /* quota */ }
   }, 400);
 });
