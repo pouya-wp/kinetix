@@ -53,6 +53,20 @@
     check('orbit 90 swings camera to the side', Math.abs(w3[2]) < 30 && Math.abs(Math.abs(w3[0] - 960) - 1920 * 50 / 36 * 0.6) < 30, w3.join(','));
     sc = call('camScene', {});
     check('scene estimate after orbit', Math.abs(sc.cam[0] - w3[0]) < 5 && Math.abs(sc.cam[2] - w3[2]) < 5, 'panel ' + sc.cam.join(','));
+    // director: live pose, key pose, DOF, spread
+    comp.time = 5;
+    call('camLive', { orbit: 30, tilt: 15, distance: 2000 });
+    var pz = call('camPose', {});
+    check('live pose applied (auto-key on keyed props)', Math.abs(pz.values.orbit - 30) < 0.01 && Math.abs(pz.values.tilt - 15) < 0.01, KXJSON.stringify(pz.values));
+    call('camKeyPose', { bezier: [0.65, 0, 0.25, 1] });
+    pz = call('camPose', {});
+    var hasKey = false; for (var kk = 0; kk < pz.keys.length; kk++) if (Math.abs(pz.keys[kk] - 5) < 0.02) hasKey = true;
+    check('pose keyed at 5s', hasKey, pz.keys.join(','));
+    call('camDOF', { on: true, focus: 1800, fstop: 2.8, blur: 150, iris: 7 });
+    pz = call('camPose', {});
+    check('DOF settings', pz.dof.on && Math.abs(pz.dof.focus - 1800) < 0.5, KXJSON.stringify(pz.dof));
+    sel(comp, [a, b]);
+    call('camSpread', { factor: 1.5 });
     sel(comp, [a, b]);
     call('camLayout', { items: [{ index: a.index, pos: [700, 540, 500] }, { index: b.index, pos: [1200, 540, -300] }] });
     check('layout wrote z', Math.abs(a.property('ADBE Transform Group').property('ADBE Position').value[2] - 500) < 0.1);

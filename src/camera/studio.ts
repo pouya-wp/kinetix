@@ -1,10 +1,10 @@
-import { h, Section, Slider, Seg, Btn, Field, Select, Toggle, toast, refreshAll, onRefresh, Chips } from '../ui/kit';
-import { Page, Tiles, Group } from '../core/page';
+import { h, Section, Slider, Seg, Btn, Field, Select, Toggle, toast, refreshAll, Chips, clear } from '../ui/kit';
+import { Page, Group } from '../core/page';
 import { call, inAE } from '../core/ae-bridge';
 import { registerCommands } from '../core/commands';
 import { EASE_LIBRARY, easeById } from '../animate/eases';
-import { MOVES, MOVE_GROUPS, SHAKES, LENSES, shakeExpr, type MoveDef } from './moves';
-import { ARRANGES, arrange, distributeDepth, DEPTH_MODES, type SceneLayer, type ArrangeId, type DepthMode } from './layout';
+import { MOVES, SHAKES, LENSES, shakeExpr, type MoveDef } from './moves';
+import { ARRANGES, arrange, distributeDepth, type SceneLayer, type ArrangeId } from './layout';
 import type { Studio } from '../main';
 
 interface Scene {
@@ -14,243 +14,361 @@ interface Scene {
   layers: SceneLayer[];
   cam: number[];
   twoD?: number;
-  hasCamera?: boolean;
+}
+interface Pose {
+  rig: string | null; t: number; fps: number; duration: number;
+  values?: { distance: number; orbit: number; tilt: number; roll: number; pan: number; look: number; focal: number; position: number[] };
+  keys?: number[];
+  dof?: { on: boolean; focus: number; aperture: number; blur: number; auto: boolean } | null;
 }
 
-const LS = 'kinetix.camera';
-const BEZ_EASES = EASE_LIBRARY.filter((e) => e.bezier);
+const LS = 'kinetix.camera2';
+const BEZ = EASE_LIBRARY.filter((e) => e.bezier);
+const READY = ['push-in', 'pull-out', 'orbit-l', 'orbit-r', 'crane-up', 'vertigo-in', 'truck-r', 'whip-r', 'spiral-in', 'hero-reveal', 'drone', 'dutch-r'];
+const SHAKE_QUICK = ['handheld', 'breathing', 'walk', 'steadicam', 'drone', 'impact', 'earthquake', 'subtle'];
+const IRIS = ['Fast Rectangle', 'Triangle', 'Square', 'Pentagon', 'Hexagon', 'Heptagon', 'Octagon', 'Nonagon', 'Decagon'];
 
 export class CameraStudio implements Studio {
   id = 'camera';
   el: HTMLElement;
   private scene: Scene | null = null;
-  private cfg = {
-    dur: 2.5, intensity: 1, ease: 'camera', physical: 0,
-    depthMode: 'linear' as DepthMode, near: 0, far: 3000, compensate: true,
-    spacing: 1.2, radius: 900, depth: 800, seed: 3, face: false, around: 'comp' as 'comp' | 'selection',
-    shake: 'handheld', amount: 100, speed: 100, sseed: 1,
-    fstop: 2.8, blur: 100, pull: 0.6, hold: 1.5, travel: 1.4, orbitTour: 0, follow: 0.3,
-    view: 'top' as 'top' | 'side', dof: true, lens: 50,
-  };
-  private canvas: HTMLCanvasElement;
-  private rigBox: HTMLElement;
-  private drag: { li: number; ox: number; oy: number } | null = null;
-  private vmap: { s: number; ox: number; oy: number } = { s: 1, ox: 0, oy: 0 };
+  private pose: Pose | null = null;
+  private c = { ease: 'camera', dur: 2.5, strength: 1, physical: 0, shake: 'handheld', amount: 100, speed: 100, near: 0, far: 3000, keepSize: true, fstop: 2.8, blur: 100, iris: 7, lens: 50, view: 'top' as 'top' | 'side', arrange: 'line-z' as ArrangeId, spacing: 1.2, radius: 900, depth: 800 };
+  private active = false;
+  private poll = 0;
+  private live: Record<string, any> = {};
+  private sending = false;
+  private status: HTMLElement;
+  private keysBar: HTMLElement;
+  private layerBox: HTMLElement;
+  private focusSel: HTMLSelectElement;
+  private view: HTMLCanvasElement;
+  private readouts: Record<string, HTMLElement> = {};
 
   constructor() {
-    try { Object.assign(this.cfg, JSON.parse(localStorage.getItem(LS) || '{}')); } catch { /* */ }
-    this.canvas = h('canvas', { style: { width: '100%', height: '260px', display: 'block', borderRadius: '14px', background: 'var(--bg-deep)', cursor: 'grab' } });
-    this.rigBox = h('div', { class: 'stack' });
-    this.bindCanvas();
-    const c = this.cfg;
-    const set = <K extends keyof typeof c>(k: K) => (v: any) => { (c as any)[k] = v; this.save(); };
+    try { Object.assign(this.c, JSON.parse(localStorage.getItem(LS) || '{}')); } catch { /* */ }
+    const c = this.c;
+    const save = () => { try { localStorage.setItem(LS, JSON.stringify(c)); } catch { /* */ } };
+    const set = <K extends keyof typeof c>(k: K) => (v: any) => { (c as any)[k] = v; save(); };
+    this.status = h('div', { class: 'stack' });
+    this.keysBar = h('div');
+    this.layerBox = h('div', { class: 'list' });
+    this.focusSel = h('select', { class: 'input' }) as HTMLSelectElement;
+    this.view = h('canvas', { style: { width: '100%', height: '220px', display: 'block', borderRadius: '14px', background: 'var(--bg-deep)' } });
 
-    const left = [
-      Section('Camera rig', [
-        h('div', { class: 'hint' }, 'The Smart Rig drives AE’s own camera with simple sliders: distance, orbit, tilt, roll, pan, lens.'),
-        Btn('Create Smart Rig', () => this.act('camRig', { lens: c.lens, dof: c.dof, forceNew: false }, 'Smart Rig ready'), { variant: 'primary', block: true, icon: 'camera' }),
-        h('div', { class: 'row' },
-          Btn('1-Node Cam', () => this.act('camCreate', { type: 'one', lens: c.lens }, 'Camera created'), { size: 'sm' }),
-          Btn('2-Node Cam', () => this.act('camCreate', { type: 'two', lens: c.lens }, 'Camera created'), { size: 'sm' })),
-        Toggle('Depth of field on new rigs', () => c.dof, set('dof')),
-        h('div', { class: 'lbl' }, 'Lens'),
-        Chips(LENSES.map((mm) => ({ value: String(mm), label: mm + 'mm' })), () => String(c.lens), (v) => { c.lens = +v; this.save(); this.act('camLens', { mm: +v }, `${v}mm lens`); }),
-        this.rigBox,
-      ], { color: 'var(--lime)' }),
-      Section('Scene', [
-        Seg([{ value: 'top', label: 'Top view' }, { value: 'side', label: 'Side view' }], () => c.view, (v) => { c.view = v; this.save(); this.draw(); }),
-        this.canvas,
-        h('div', { class: 'row' },
-          Btn('Refresh', () => this.refresh(), { size: 'sm', icon: 'sync' }),
-          Btn('Make 3D', () => this.act('camMake3D', { on: true }, '3D on for selection'), { size: 'sm' })),
-        h('div', { class: 'hint' }, 'Drag a layer in the view to move it in depth. Lime = selected in AE.'),
-      ], { color: 'var(--info)' }),
-    ];
+    // ───── 1. camera
+    const camSec = Section('1 · Camera', [
+      this.status,
+      Btn('Add camera', () => this.addCamera(), { variant: 'primary', block: true, icon: 'camera' }),
+      h('div', { class: 'lbl' }, 'Lens'),
+      Chips(LENSES.map((mm) => ({ value: String(mm), label: mm + 'mm' })), () => String(c.lens), (v) => { c.lens = +v; save(); this.send({ focal: +v }, true); }),
+    ], { color: 'var(--lime)' });
 
-    const moveGroups = MOVE_GROUPS.map((g) => {
-      const t = Tiles(MOVES.filter((m) => m.group === g).map((m) => ({ id: m.id, label: m.label, sub: m.sub })), { onPick: (x) => this.move(MOVES.find((m) => m.id === x.id)!), min: 128 });
-      return Group('Moves · ' + g, [t.el]);
-    });
-    const arr = Tiles(ARRANGES, { onPick: (x) => this.arrange(x.id as ArrangeId), min: 128 });
-    const shk = Tiles(SHAKES.map((s) => ({ id: s.id, label: s.label, sub: s.sub })), { onPick: (x) => { c.shake = x.id; this.save(); this.shake(); shk.refresh(); }, isOn: (x) => x.id === c.shake, min: 128 });
+    // ───── 3. focus & blur
+    this.focusSel.addEventListener('change', () => { if (this.focusSel.value) this.act('camFocus', { mode: 'auto', layers: [this.focusSel.value], fstop: c.fstop, blur: c.blur }, 'Focus follows ' + this.focusSel.value); });
+    const focusSec = Section('3 · Focus & blur', [
+      Toggle('Depth of field', () => !!this.pose?.dof?.on, (v) => this.act('camDOF', { on: v }, v ? 'DOF on' : 'DOF off')),
+      Field('Focus on layer (auto)', this.focusSel),
+      Slider({ label: 'Manual focus distance', min: 50, max: 10000, step: 10, get: () => this.pose?.dof?.focus ?? 2000, set: (v, f) => { if (this.pose?.dof) this.pose.dof.focus = v; if (f) this.act('camDOF', { focus: v }, 'Focus set'); } }),
+      h('div', { class: 'lbl' }, 'Aperture'),
+      Chips(['1.2', '1.8', '2.8', '4', '5.6', '8', '11', '16'].map((f) => ({ value: f, label: 'f/' + f })), () => String(c.fstop), (v) => { c.fstop = +v; save(); this.act('camDOF', { fstop: +v }, `f/${v}`); }),
+      Slider({ label: 'Blur amount %', min: 0, max: 400, get: () => c.blur, set: (v, f) => { c.blur = v; save(); if (f) this.act('camDOF', { blur: v }, 'Blur set'); } }),
+      Field('Bokeh shape', Select(IRIS.map((n, i) => ({ value: String(i + 1), label: n })), () => String(c.iris), (v) => { c.iris = +v; save(); this.act('camDOF', { iris: +v }, IRIS[+v - 1] + ' bokeh'); })),
+      Btn('Rack focus through selected layers', () => this.rack(), { size: 'sm', variant: 'soft' }),
+    ], { color: 'var(--info)' });
 
-    const main = [
-      h('div', { class: 'panel-card' },
-        h('div', { class: 'hint' }, 'Moves start at the current time indicator and keyframe the Smart Rig (created automatically if needed). Set duration, strength and ease on the right.')),
-      ...moveGroups,
-      Group('3D layout (selected layers)', [
-        h('div', { class: 'panel-card' },
-          h('div', { class: 'row' },
-            Field('Depth spread', Select(DEPTH_MODES.map((d) => ({ value: d.id, label: d.label })), () => c.depthMode, set('depthMode'))),
-            Toggle('Keep apparent size', () => c.compensate, set('compensate'))),
-          h('div', { class: 'row' },
-            Slider({ label: 'Near Z', min: -3000, max: 3000, step: 10, get: () => c.near, set: set('near') }),
-            Slider({ label: 'Far Z', min: -3000, max: 12000, step: 10, get: () => c.far, set: set('far') })),
-          Btn('Distribute depth', () => this.depth(), { variant: 'soft', icon: 'wand' })),
-        arr.el,
-      ]),
-      Group('Focus & depth of field', [h('div', { class: 'panel-card' },
-        Chips(['1.4', '2', '2.8', '4', '5.6', '8', '11', '16'].map((f) => ({ value: f, label: 'f/' + f })), () => String(c.fstop), (v) => { c.fstop = +v; this.save(); }),
-        h('div', { class: 'row' },
-          Slider({ label: 'Blur level %', min: 0, max: 300, get: () => c.blur, set: set('blur') }),
-          Slider({ label: 'Focus pull (s)', min: 0.1, max: 3, step: 0.05, get: () => c.pull, set: set('pull') })),
-        h('div', { class: 'row3' },
-          Btn('Auto focus', () => this.focus('auto'), { size: 'sm', variant: 'soft', title: 'Focus follows the selected layer' }),
-          Btn('Rack focus', () => this.focus('rack'), { size: 'sm', title: 'Pull focus through the selected layers, one per hold time' }),
-          Btn('DOF off', () => this.focus('off'), { size: 'sm' })))]),
-      Group('Camera shake', [shk.el,
-        h('div', { class: 'row' }, Btn('Apply shake', () => this.shake(), { variant: 'soft', icon: 'wand' }), Btn('Remove shake', () => this.act('camShake', { clear: true, amount: c.amount, speed: c.speed, seed: c.sseed }, 'Shake removed'), { variant: 'danger' }))]),
-      Group('Smart tools', [h('div', { class: 'tiles', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))' } },
-        ...[
-          ['Frame selected', 'fit the selection in shot', () => this.act('camFrame', { margin: 1.15 }, 'Framed')],
-          ['Tour selected', 'visit layers in selection order', () => this.act('camTour', { hold: c.hold, travel: c.travel, orbit: c.orbitTour, bezier: easeById(c.ease).bezier }, 'Tour created')],
-          ['Follow selected', 'rig tracks a moving layer', () => this.act('camFollow', { smooth: c.follow }, 'Following')],
-          ['Stop following', 'release the target', () => this.act('camFollow', { off: true }, 'Follow removed')],
-          ['Depth fade', 'far layers fade out', () => this.act('camDepthFx', { mode: 'fade', near: 1500, far: 6000 }, 'Depth fade on')],
-          ['Atmosphere', 'fade + blur with distance', () => this.act('camDepthFx', { mode: 'fog', near: 1500, far: 6000, blur: 18 }, 'Atmosphere on')],
-          ['Auto cull', 'hide layers behind camera', () => this.act('camDepthFx', { mode: 'cull' }, 'Culling on')],
-          ['Clear depth FX', 'remove fade / cull', () => this.act('camDepthFx', { mode: 'none' }, 'Depth FX cleared')],
-          ['Motion blur 180°', 'cinematic blur on 3D layers', () => this.act('camMotionBlur', { on: true, angle: 180 }, 'Motion blur on')],
-          ['Smooth keyframes', 'remove jitter on selected props', () => this.act('camSmooth', { strength: 0.5 }, 'Smoothed')],
-          ['Bake camera', 'expressions → keyframes', () => this.act('camBake', {}, 'Camera baked')],
-          ['Cut at markers', 'switch selected cameras', () => this.act('camCuts', {}, 'Camera cuts set')],
-        ].map(([label, sub, fn]) => { const t = h('div', { class: 'tile' }, h('div', { class: 'tile-label' }, label as string), h('div', { class: 'tile-sub' }, sub as string)); t.addEventListener('click', fn as () => void); return t; }))]),
-    ];
+    // ───── main: 2-axis director pads
+    const director = h('div', { class: 'panel-card' },
+      h('div', { class: 'hstack' }, h('b', { class: 'grow', style: { fontSize: '15px' } }, '🎮 Director'), h('span', { class: 'hint' }, 'Drag the pads — AE follows live')),
+      h('div', { class: 'pads' },
+        this.pad('Orbit', 'drag ↔ orbit · ↕ height', (dx, dy, st) => ({ orbit: st.orbit + dx * 0.35, tilt: Math.max(-85, Math.min(85, st.tilt - dy * 0.25)) })),
+        this.pad('Move', 'drag to slide the camera', (dx, dy, st) => { const k = Math.max(0.4, st.distance / 1200); return { position: [st.position[0] - dx * k, st.position[1] - dy * k, st.position[2]] }; }),
+        this.strip('Dolly', (dy, st) => ({ distance: Math.max(40, st.distance * Math.exp(dy * 0.005)) })),
+      ),
+      h('div', { class: 'row' },
+        Slider({ label: 'Roll °', min: -45, max: 45, step: 0.5, get: () => this.pose?.values?.roll ?? 0, set: (v, f) => this.send({ roll: v }, f) }),
+        Slider({ label: 'Lens mm', min: 10, max: 200, step: 1, get: () => this.pose?.values?.focal ?? 50, set: (v, f) => this.send({ focal: v }, f) })),
+      h('div', { class: 'row' },
+        Slider({ label: 'Pan (look left/right) °', min: -60, max: 60, step: 0.5, get: () => this.pose?.values?.pan ?? 0, set: (v, f) => this.send({ pan: v }, f) }),
+        Slider({ label: 'Look up/down °', min: -40, max: 40, step: 0.5, get: () => this.pose?.values?.look ?? 0, set: (v, f) => this.send({ look: v }, f) })),
+      h('div', { class: 'keyrow' },
+        Btn('◆ Key pose', () => this.act('camKeyPose', { bezier: easeById(c.ease).bezier }, 'Pose keyed at the playhead'), { variant: 'primary' }),
+        Btn('◀', () => this.jump(-1), { title: 'Previous key' }),
+        Btn('▶', () => this.jump(1), { title: 'Next key' }),
+        Btn('Delete key', () => this.act('camDeleteKey', {}, 'Key deleted'), { variant: 'danger' }),
+        Btn('Clear', () => this.act('camClearKeys', {}, 'All camera keys removed'), {}),
+      ),
+      Field('Ease between poses', Select(BEZ.map((e) => ({ value: e.id, label: `${e.group} · ${e.label}` })), () => c.ease, set('ease'))),
+      this.keysBar,
+      h('div', { class: 'hint' }, 'Workflow: move the AE playhead → pose the camera with the pads → ◆ Key pose. Repeat. Keys that already exist update automatically while you drag.'),
+    );
+
+    // ───── 2. layers & depth
+    const layersCard = h('div', { class: 'panel-card' },
+      h('div', { class: 'hstack' },
+        Btn('− Closer together', () => this.act('camSpread', { factor: 0.8 }, 'Depth compressed'), { size: 'sm' }),
+        Btn('+ Further apart', () => this.act('camSpread', { factor: 1.25 }, 'Depth expanded'), { size: 'sm' })),
+      h('div', { class: 'row' },
+        Slider({ label: 'Front Z', min: -3000, max: 3000, step: 10, get: () => c.near, set: set('near') }),
+        Slider({ label: 'Back Z', min: -2000, max: 12000, step: 10, get: () => c.far, set: set('far') })),
+      h('div', { class: 'row' }, Toggle('Keep on-screen size', () => c.keepSize, set('keepSize')), Btn('Spread evenly', () => this.distribute(), { size: 'sm', variant: 'soft' })),
+      Field('Arrange selected', h('div', { class: 'hstack' }, Select(ARRANGES.map((a) => ({ value: a.id, label: a.label })), () => c.arrange, set('arrange')), Btn('Apply', () => this.arrangeSel(), { size: 'sm' }))),
+      this.layerBox,
+    );
+
+    // ───── 4. ready effects
+    const ready = h('div', { class: 'panel-card' },
+      h('div', { class: 'lbl' }, 'Moves (start at the playhead)'),
+      h('div', { class: 'chips' }, ...READY.map((id) => { const m = MOVES.find((x) => x.id === id)!; return h('button', { class: 'chip', title: m.sub, onclick: () => this.move(m) }, m.label); })),
+      h('div', { class: 'row' },
+        Slider({ label: 'Move duration (s)', min: 0.3, max: 10, step: 0.1, get: () => c.dur, set: set('dur') }),
+        Slider({ label: 'Strength', min: 0.2, max: 3, step: 0.05, get: () => c.strength, set: set('strength') })),
+      Slider({ label: 'Camera weight (overshoot)', min: 0, max: 100, get: () => c.physical, set: set('physical') }),
+      h('div', { class: 'lbl' }, 'Shake'),
+      h('div', { class: 'chips' }, ...SHAKE_QUICK.map((id) => { const s = SHAKES.find((x) => x.id === id)!; return h('button', { class: 'chip', title: s.sub, onclick: () => { c.shake = id; save(); this.shake(); } }, s.label); }),
+        h('button', { class: 'chip', onclick: () => this.act('camShake', { clear: true, amount: c.amount, speed: c.speed, seed: 1 }, 'Shake removed') }, '✕ No shake')),
+      h('div', { class: 'row' },
+        Slider({ label: 'Shake amount %', min: 0, max: 400, get: () => c.amount, set: set('amount') }),
+        Slider({ label: 'Shake speed %', min: 10, max: 400, get: () => c.speed, set: set('speed') })),
+      h('div', { class: 'lbl' }, 'Tools'),
+      h('div', { class: 'chips' },
+        h('button', { class: 'chip', onclick: () => this.act('camFrame', { margin: 1.15 }, 'Framed the selection') }, 'Frame selected'),
+        h('button', { class: 'chip', onclick: () => this.act('camTour', { hold: 1.2, travel: 1.4, orbit: 8, bezier: easeById(c.ease).bezier }, 'Tour created') }, 'Tour selected'),
+        h('button', { class: 'chip', onclick: () => this.act('camFollow', { smooth: 0.3 }, 'Camera follows the selection') }, 'Follow selected'),
+        h('button', { class: 'chip', onclick: () => this.act('camFollow', { off: true }, 'Follow off') }, 'Stop follow'),
+        h('button', { class: 'chip', onclick: () => this.act('camMotionBlur', { on: true, angle: 180 }, 'Motion blur on') }, 'Motion blur'),
+        h('button', { class: 'chip', onclick: () => this.act('camDepthFx', { mode: 'fog', near: 1500, far: 6000, blur: 18 }, 'Atmosphere on') }, 'Atmosphere'),
+        h('button', { class: 'chip', onclick: () => this.act('camBake', {}, 'Camera baked to keyframes') }, 'Bake')),
+    );
 
     const right = [
-      Section('Move settings', [
-        Slider({ label: 'Duration (s)', min: 0.2, max: 12, step: 0.1, get: () => c.dur, set: set('dur') }),
-        Slider({ label: 'Strength', min: 0.1, max: 3, step: 0.05, get: () => c.intensity, set: set('intensity') }),
-        Field('Ease', Select(BEZ_EASES.map((e) => ({ value: e.id, label: `${e.group} · ${e.label}` })), () => c.ease, set('ease'))),
-        Slider({ label: 'Physical overshoot', min: 0, max: 100, get: () => c.physical, set: set('physical'), title: 'The camera has mass: it overshoots and settles after each move' }),
-      ], { color: 'var(--lime)' }),
-      Section('Layout settings', [
-        Slider({ label: 'Spacing', min: 0.3, max: 4, step: 0.05, get: () => c.spacing, set: set('spacing') }),
-        Slider({ label: 'Radius', min: 50, max: 5000, step: 10, get: () => c.radius, set: set('radius') }),
-        Slider({ label: 'Depth', min: 0, max: 8000, step: 10, get: () => c.depth, set: set('depth') }),
-        Slider({ label: 'Seed', min: 1, max: 999, get: () => c.seed, set: set('seed') }),
-        Field('Center', Seg([{ value: 'comp', label: 'Comp' }, { value: 'selection', label: 'Selection' }], () => c.around, set('around'))),
-        Toggle('Face camera (auto-orient)', () => c.face, set('face')),
-      ], { color: 'var(--violet)' }),
-      Section('Shake settings', [
-        Slider({ label: 'Amount %', min: 0, max: 400, get: () => c.amount, set: set('amount') }),
-        Slider({ label: 'Speed %', min: 5, max: 400, get: () => c.speed, set: set('speed') }),
-        Slider({ label: 'Seed', min: 1, max: 999, get: () => c.sseed, set: set('sseed') }),
-      ], { color: 'var(--info)', collapsed: true }),
-      Section('Tour & focus', [
-        Slider({ label: 'Hold per stop (s)', min: 0.2, max: 6, step: 0.1, get: () => c.hold, set: set('hold') }),
-        Slider({ label: 'Travel (s)', min: 0.2, max: 6, step: 0.1, get: () => c.travel, set: set('travel') }),
-        Slider({ label: 'Tour orbit swing (°)', min: 0, max: 60, get: () => c.orbitTour, set: set('orbitTour') }),
-        Slider({ label: 'Follow smoothing (s)', min: 0, max: 2, step: 0.05, get: () => c.follow, set: set('follow') }),
-      ], { color: 'var(--text-3)', collapsed: true }),
+      Section('Scene view', [
+        Seg([{ value: 'top', label: 'Top' }, { value: 'side', label: 'Side' }], () => c.view, (v) => { c.view = v; save(); this.draw(); }),
+        this.view,
+        h('div', { class: 'hint' }, 'Blue = camera and what it sees. Lime = selected layers.'),
+      ], { color: 'var(--info)' }),
     ];
-    this.el = Page({ title: '3D Camera', sub: 'Direct control of After Effects’ camera and 3D layers — rigs, moves, depth, focus and shake in one click.', side: left, main, right }).el;
+    this.el = Page({
+      title: '3D Camera', sub: 'Add a camera, arrange your layers in depth, pose and key the camera with the Director pads, set focus — done.',
+      side: [camSec, focusSec],
+      main: [Group('Director', [director]), Group('2 · Layers & depth', [layersCard]), Group('4 · Ready moves & shake', [ready])],
+      right,
+    }).el;
+    new ResizeObserver(() => this.draw()).observe(this.view);
     registerCommands([
-      ...MOVES.map((m) => ({ id: 'cam.' + m.id, label: 'Camera: ' + m.label, group: 'Camera', keywords: m.group + ' ' + m.sub, run: () => this.move(m) })),
-      ...ARRANGES.map((a) => ({ id: 'arr.' + a.id, label: '3D Layout: ' + a.label, group: 'Camera', run: () => this.arrange(a.id) })),
-      { id: 'cam.rig', label: 'Camera: Create Smart Rig', group: 'Camera', run: () => this.act('camRig', { lens: c.lens, dof: c.dof }, 'Smart Rig ready') },
-      { id: 'cam.frame', label: 'Camera: Frame selected layers', group: 'Camera', run: () => this.act('camFrame', { margin: 1.15 }, 'Framed') },
+      { id: 'cam.add', label: 'Camera: Add camera', group: 'Camera', run: () => this.addCamera() },
+      { id: 'cam.key', label: 'Camera: Key pose at playhead', group: 'Camera', run: () => this.act('camKeyPose', { bezier: easeById(c.ease).bezier }, 'Pose keyed') },
+      ...MOVES.map((m) => ({ id: 'cam.' + m.id, label: 'Camera: ' + m.label, group: 'Camera', keywords: m.sub, run: () => this.move(m) })),
     ]);
   }
 
-  activate() { this.refresh(); }
-  deactivate() {}
-  private save() { try { localStorage.setItem(LS, JSON.stringify(this.cfg)); } catch { /* */ } }
+  activate() {
+    this.active = true;
+    this.refresh();
+    clearInterval(this.poll);
+    // follow the AE playhead / undo while the tab is open
+    this.poll = window.setInterval(() => { if (this.active && !this.sending && !document.hidden) this.refreshPose(); }, 1200);
+  }
+  deactivate() { this.active = false; clearInterval(this.poll); }
 
+  // ───────── data ─────────
+  private async refresh() {
+    try { this.scene = await call<Scene>('camScene'); } catch (e: any) { if (inAE) toast(e.message, 'info'); }
+    await this.refreshPose();
+    this.renderLayers();
+    this.draw();
+  }
+  private async refreshPose() {
+    try { this.pose = await call<Pose>('camPose'); } catch { return; }
+    this.renderStatus();
+    this.renderKeys();
+    refreshAll();
+  }
   private async act(fn: string, args: any, ok: string) {
     try {
       const r = await call<any>(fn, args);
-      toast(ok + (r?.layers !== undefined ? ` · ${r.layers} layer(s)` : ''));
-      if (r?.warnings?.length) r.warnings.slice(0, 3).forEach((w: string) => toast(w, 'info', 5000));
-      this.refresh();
+      toast(ok);
+      r?.warnings?.slice?.(0, 3).forEach((w: string) => toast(w, 'info', 5000));
+      await this.refresh();
       return r;
     } catch (e: any) { toast(e.message, 'err', 6000); return null; }
   }
-
-  async refresh() {
-    try {
-      this.scene = await call<Scene>('camScene');
-      this.renderRig();
-      this.draw();
-    } catch (e: any) { if (inAE) toast(e.message, 'info', 4000); }
+  private async addCamera() {
+    await this.act('camRig', { lens: this.c.lens, dof: false, make3D: true }, 'Camera added — your layers are now 3D');
   }
 
-  // ───────── rig live controls ─────────
-  private renderRig() {
-    const box = this.rigBox;
-    box.innerHTML = '';
-    const n2 = this.scene?.twoD ?? 0;
-    if (n2 > 0) box.append(h('div', { class: 'panel-card', style: { background: 'rgba(255,90,95,.08)' } },
-      h('div', { class: 'hint', style: { color: '#ffb4b6' } }, `${n2} layer(s) are 2D — a camera only moves 3D layers.`),
-      Btn('Make all layers 3D', () => this.act('camMake3D', { on: true, all: true }, 'All layers are 3D now'), { size: 'sm', variant: 'soft' })));
-    const r = this.scene?.rig;
-    if (!r) { box.append(h('div', { class: 'empty' }, 'No Smart Rig in this comp yet.')); return; }
-    box.append(h('div', { class: 'lbl' }, 'Rig · ' + r.name));
-    const live = (label: string, key: keyof typeof r, min: number, max: number, step = 1) => Slider({
-      label, min, max, step, get: () => (this.scene?.rig?.[key] as number) ?? 0,
-      set: (v, fin) => { (this.scene!.rig as any)[key] = v; refreshAll(); this.draw(); if (fin) call('camSetRig', { [key]: v }).catch((e) => toast(e.message, 'err')); },
+  /** Throttled live updates while dragging. */
+  private send(v: Record<string, any>, final = false) {
+    if (!this.pose?.rig) { if (final) toast('Add a camera first', 'info'); return; }
+    Object.assign(this.pose.values!, v);
+    Object.assign(this.live, v);
+    this.updateReadouts();
+    this.drawFromPose();
+    const flush = async () => {
+      if (this.sending) return;
+      const payload = this.live;
+      this.live = {};
+      if (!Object.keys(payload).length) return;
+      this.sending = true;
+      try { await call('camLive', payload); } catch (e: any) { toast(e.message, 'err'); }
+      this.sending = false;
+      if (Object.keys(this.live).length) flush();
+      else if (final) this.refreshPose();
+    };
+    flush();
+  }
+
+  // ───────── pads ─────────
+  private pad(label: string, sub: string, map: (dx: number, dy: number, st: NonNullable<Pose['values']>) => Record<string, any>) {
+    const dot = h('div', { class: 'pad-dot' });
+    const read = h('div', { class: 'pad-read' });
+    this.readouts[label] = read;
+    const el = h('div', { class: 'pad' }, h('div', { class: 'pad-grid' }), dot, h('div', { class: 'pad-label' }, label), h('div', { class: 'pad-sub' }, sub), read);
+    let st: NonNullable<Pose['values']> | null = null, x0 = 0, y0 = 0;
+    el.addEventListener('pointerdown', (e) => {
+      if (!this.pose?.values) { toast('Add a camera first', 'info'); return; }
+      el.setPointerCapture(e.pointerId);
+      st = structuredClone(this.pose.values);
+      x0 = e.clientX; y0 = e.clientY;
+      el.classList.add('on');
     });
-    box.append(
-      live('Distance', 'distance', 50, 12000, 10), live('Orbit °', 'orbit', -360, 360), live('Tilt °', 'tilt', -89, 89),
-      live('Roll °', 'roll', -180, 180), live('Pan °', 'pan', -90, 90), live('Look °', 'look', -60, 60), live('Focal mm', 'focal', 8, 300),
-    );
+    el.addEventListener('pointermove', (e) => {
+      if (!st) return;
+      const dx = e.clientX - x0, dy = e.clientY - y0;
+      const r = el.getBoundingClientRect();
+      dot.style.transform = `translate(${Math.max(-r.width / 2 + 10, Math.min(r.width / 2 - 10, dx))}px, ${Math.max(-r.height / 2 + 10, Math.min(r.height / 2 - 10, dy))}px)`;
+      this.send(map(dx, dy, st));
+    });
+    const end = (e: PointerEvent) => {
+      if (!st) return;
+      this.send(map(e.clientX - x0, e.clientY - y0, st), true);
+      st = null;
+      dot.style.transform = '';
+      el.classList.remove('on');
+    };
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+    return el;
+  }
+  private strip(label: string, map: (dy: number, st: NonNullable<Pose['values']>) => Record<string, any>) {
+    const knob = h('div', { class: 'strip-knob' });
+    const read = h('div', { class: 'pad-read' });
+    this.readouts[label] = read;
+    const el = h('div', { class: 'strip' }, knob, h('div', { class: 'pad-label' }, label), h('div', { class: 'pad-sub' }, '↑ closer · ↓ farther'), read);
+    let st: NonNullable<Pose['values']> | null = null, y0 = 0;
+    el.addEventListener('pointerdown', (e) => { if (!this.pose?.values) { toast('Add a camera first', 'info'); return; } el.setPointerCapture(e.pointerId); st = structuredClone(this.pose.values); y0 = e.clientY; el.classList.add('on'); });
+    el.addEventListener('pointermove', (e) => { if (!st) return; const dy = e.clientY - y0; knob.style.transform = `translateY(${Math.max(-60, Math.min(60, dy))}px)`; this.send(map(dy, st)); });
+    const end = (e: PointerEvent) => { if (!st) return; this.send(map(e.clientY - y0, st), true); st = null; knob.style.transform = ''; el.classList.remove('on'); };
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+    return el;
+  }
+  private updateReadouts() {
+    const v = this.pose?.values;
+    if (!v) { Object.values(this.readouts).forEach((r) => (r.textContent = '—')); return; }
+    this.readouts.Orbit && (this.readouts.Orbit.textContent = `${v.orbit.toFixed(0)}° · ${v.tilt.toFixed(0)}°`);
+    this.readouts.Move && (this.readouts.Move.textContent = `${v.position[0].toFixed(0)}, ${v.position[1].toFixed(0)}`);
+    this.readouts.Dolly && (this.readouts.Dolly.textContent = `${v.distance.toFixed(0)} px`);
+  }
+
+  // ───────── panels ─────────
+  private renderStatus() {
+    clear(this.status);
+    const p = this.pose;
+    if (!p?.rig) this.status.append(h('div', { class: 'empty' }, 'No camera yet. “Add camera” creates one and turns your layers 3D — the view looks exactly the same until you move it.'));
+    else this.status.append(h('div', { class: 'kv' }, h('span', null, 'Camera'), h('b', null, p.rig), h('span', null, 'Playhead'), h('b', null, p.t.toFixed(2) + 's'), h('span', null, 'Keys'), h('b', null, String(p.keys?.length ?? 0))));
+    const n2 = this.scene?.twoD ?? 0;
+    if (p?.rig && n2 > 0) this.status.append(h('div', { class: 'hint', style: { color: '#ffb4b6' } }, `${n2} layer(s) are still 2D and ignore the camera.`), Btn('Make all layers 3D', () => this.act('camMake3D', { on: true, all: true }, 'All layers are 3D'), { size: 'sm', variant: 'soft' }));
+    this.updateReadouts();
+  }
+
+  private renderKeys() {
+    const p = this.pose;
+    clear(this.keysBar);
+    if (!p?.rig) return;
+    const D = Math.max(p.duration, 0.1);
+    const bar = h('div', { class: 'keybar' }, h('div', { class: 'keybar-head', style: { left: (p.t / D) * 100 + '%' } }));
+    (p.keys ?? []).forEach((t, i) => {
+      const k = h('button', { class: 'keybar-key' + (Math.abs(t - p.t) < 0.5 / p.fps ? ' on' : ''), style: { left: (t / D) * 100 + '%' }, title: `Pose ${i + 1} · ${t.toFixed(2)}s` });
+      k.addEventListener('click', () => this.goto(t));
+      bar.appendChild(k);
+    });
+    bar.addEventListener('click', (e) => { if ((e.target as HTMLElement).classList.contains('keybar-key')) return; const r = bar.getBoundingClientRect(); this.goto(((e.clientX - r.left) / r.width) * D); });
+    this.keysBar.append(h('div', { class: 'lbl' }, `Poses on the timeline (${p.keys?.length ?? 0}) — click to jump`), bar);
+  }
+
+  private async goto(t: number) {
+    try { await call('camSetTime', { t }); await this.refreshPose(); } catch (e: any) { toast(e.message, 'err'); }
+  }
+  private jump(dir: number) {
+    const p = this.pose;
+    if (!p?.keys?.length) return;
+    const eps = 0.5 / p.fps;
+    const nxt = dir > 0 ? p.keys.find((t) => t > p.t + eps) : [...p.keys].reverse().find((t) => t < p.t - eps);
+    if (nxt !== undefined) this.goto(nxt);
+  }
+
+  private renderLayers() {
+    clear(this.layerBox);
+    const L = (this.scene?.layers ?? []).filter((l) => l.threeD);
+    this.focusSel.innerHTML = '';
+    this.focusSel.append(h('option', { value: '' }, '— pick a layer —'), ...L.map((l) => h('option', { value: l.name }, l.name)));
+    if (!L.length) { this.layerBox.append(h('div', { class: 'empty' }, 'No 3D layers yet — Add camera turns them 3D.')); return; }
+    for (const l of L) {
+      const row = h('div', { class: 'layer-row' + (l.sel ? ' sel' : '') },
+        h('div', { class: 'name' }, l.name),
+        Slider({ label: 'Z', min: -3000, max: 8000, step: 5, get: () => l.pos[2], set: (v, f) => { const k = this.c.keepSize && this.scene ? (v - this.scene.cam[2]) / Math.max(1, l.pos[2] - this.scene.cam[2]) : 1; const prevZ = l.pos[2]; l.pos[2] = v; if (k !== 1) { l.scale = l.scale.map((s) => s * k); l.pos[0] = this.scene!.cam[0] + (l.pos[0] - this.scene!.cam[0]) * k; l.pos[1] = this.scene!.cam[1] + (l.pos[1] - this.scene!.cam[1]) * k; } this.draw(); if (f) call('camLayout', { items: [{ index: l.index, pos: l.pos, scale: this.c.keepSize ? l.scale : undefined }] }).catch((e) => toast(e.message, 'err')); void prevZ; } }),
+        Slider({ label: 'Size %', min: 5, max: 400, step: 1, get: () => l.scale[0], set: (v, f) => { const r = v / (l.scale[0] || 100); l.scale = l.scale.map((s) => s * r); if (f) call('camLayout', { items: [{ index: l.index, pos: l.pos, scale: l.scale }] }).catch((e) => toast(e.message, 'err')); } }),
+      );
+      this.layerBox.appendChild(row);
+    }
     refreshAll();
   }
 
-  // ───────── actions ─────────
   private move(m: MoveDef) {
-    const c = this.cfg;
-    const k = c.intensity;
+    const c = this.c, k = c.strength;
     const ops = m.ops.map((o) => ({ ...o, value: o.op === 'mul' ? 1 + (o.value - 1) * k : o.op === 'add' ? o.value * k : o.value }));
-    const ease = easeById(m.ease && !this.userEase ? m.ease : c.ease);
-    const bez = ease.bezier ?? easeById('camera').bezier;
-    this.act('camKeys', { ops, dur: m.dur && c.dur === 2.5 ? m.dur : c.dur, bezier: bez, physical: c.physical || 0, marker: m.label }, `${m.label} at the playhead`);
+    this.act('camKeys', { ops, dur: c.dur, bezier: easeById(m.ease ?? c.ease).bezier ?? [0.33, 0, 0.67, 1], physical: c.physical, marker: m.label }, `${m.label} from the playhead`);
   }
-  private get userEase() { return this.cfg.ease !== 'camera'; }
-
-  private selected(): SceneLayer[] { return (this.scene?.layers ?? []).filter((l) => l.sel); }
-
-  private async arrange(id: ArrangeId) {
-    await this.refresh();
-    const L = this.selected();
-    if (!L.length) { toast('Select layers in After Effects first', 'info'); return; }
-    const c = this.cfg, s = this.scene!;
-    const center: [number, number, number] = c.around === 'selection'
-      ? [L.reduce((a, l) => a + l.pos[0], 0) / L.length, L.reduce((a, l) => a + l.pos[1], 0) / L.length, L.reduce((a, l) => a + l.pos[2], 0) / L.length]
-      : [s.comp.w / 2, s.comp.h / 2, 0];
-    const items = arrange(id, L, { spacing: c.spacing, radius: c.radius, depth: c.depth, center, seed: c.seed, face: c.face });
-    this.act('camLayout', { items, face: c.face ? true : undefined }, ARRANGES.find((a) => a.id === id)!.label);
-  }
-
-  private async depth() {
-    await this.refresh();
-    const L = this.selected();
-    if (!L.length) { toast('Select layers in After Effects first', 'info'); return; }
-    const c = this.cfg;
-    const items = distributeDepth(L, c.depthMode, c.near, c.far, c.compensate, this.scene!.cam, c.seed);
-    this.act('camLayout', { items }, 'Depth distributed');
-  }
-
-  private async focus(mode: 'auto' | 'rack' | 'off') {
-    const c = this.cfg;
-    if (mode === 'off') return this.act('camFocus', { mode }, 'Depth of field off');
-    await this.refresh();
-    const L = this.selected();
-    if (!L.length) { toast('Select the layer(s) to focus on', 'info'); return; }
-    const t0 = this.scene!.comp.time;
-    this.act('camFocus', { mode, layers: L.map((l) => l.name), times: L.map((_, i) => t0 + i * c.hold), fstop: c.fstop, blur: c.blur, pull: c.pull }, mode === 'auto' ? `Focus locked on ${L[0].name}` : `Rack focus through ${L.length} layers`);
-  }
-
   private shake() {
-    const c = this.cfg;
-    const s = SHAKES.find((x) => x.id === c.shake) ?? SHAKES[0];
-    this.act('camShake', { pos: shakeExpr(s, 'pos'), rx: shakeExpr(s, 'rx'), ry: shakeExpr(s, 'ry'), rz: shakeExpr(s, 'rz'), amount: c.amount, speed: c.speed, seed: c.sseed }, `${s.label} shake`);
+    const s = SHAKES.find((x) => x.id === this.c.shake) ?? SHAKES[0];
+    this.act('camShake', { pos: shakeExpr(s, 'pos'), rx: shakeExpr(s, 'rx'), ry: shakeExpr(s, 'ry'), rz: shakeExpr(s, 'rz'), amount: this.c.amount, speed: this.c.speed, seed: 1 }, `${s.label} shake`);
+  }
+  private async distribute() {
+    await this.refresh();
+    const L = (this.scene?.layers ?? []).filter((l) => l.sel);
+    const use = L.length ? L : (this.scene?.layers ?? []).filter((l) => l.threeD);
+    if (!use.length) { toast('No layers', 'info'); return; }
+    this.act('camLayout', { items: distributeDepth(use, 'linear', this.c.near, this.c.far, this.c.keepSize, this.scene!.cam, 1) }, `Spread ${use.length} layers in depth`);
+  }
+  private async arrangeSel() {
+    await this.refresh();
+    const L = (this.scene?.layers ?? []).filter((l) => l.sel);
+    if (!L.length) { toast('Select layers in AE first', 'info'); return; }
+    const s = this.scene!;
+    this.act('camLayout', { items: arrange(this.c.arrange, L, { spacing: this.c.spacing, radius: this.c.radius, depth: this.c.depth, center: [s.comp.w / 2, s.comp.h / 2, 0], seed: 3, face: false }) }, ARRANGES.find((a) => a.id === this.c.arrange)!.label);
+  }
+  private async rack() {
+    await this.refresh();
+    const L = (this.scene?.layers ?? []).filter((l) => l.sel);
+    if (L.length < 2) { toast('Select 2+ layers in the order focus should travel', 'info'); return; }
+    const t0 = this.scene!.comp.time;
+    this.act('camFocus', { mode: 'rack', layers: L.map((l) => l.name), times: L.map((_, i) => t0 + i * 1.5), fstop: this.c.fstop, blur: this.c.blur, pull: 0.6 }, `Rack focus through ${L.length} layers`);
   }
 
-  // ───────── schematic view ─────────
+  // ───────── scene view ─────────
+  private drawFromPose() {
+    const s = this.scene, v = this.pose?.values;
+    if (!s || !v) return;
+    const d = v.distance, tl = (-v.tilt * Math.PI) / 180, ob = (v.orbit * Math.PI) / 180;
+    const y1 = d * Math.sin(tl), z1 = -d * Math.cos(tl);
+    s.cam = [v.position[0] + z1 * Math.sin(ob), v.position[1] + y1, v.position[2] + z1 * Math.cos(ob)];
+    if (s.rig) { s.rig.pos = v.position; s.rig.focal = v.focal; }
+    this.draw();
+  }
   private draw() {
-    const cv = this.canvas, r = cv.getBoundingClientRect();
-    if (r.width < 2) { requestAnimationFrame(() => this.draw()); return; }
+    const cv = this.view, r = cv.getBoundingClientRect();
+    if (r.width < 2) return;
     const dpr = window.devicePixelRatio || 1;
     cv.width = r.width * dpr; cv.height = r.height * dpr;
     const g = cv.getContext('2d')!;
@@ -258,102 +376,30 @@ export class CameraStudio implements Studio {
     const W = r.width, H = r.height;
     g.clearRect(0, 0, W, H);
     const s = this.scene;
-    if (!s) { g.fillStyle = 'rgba(247,247,248,.4)'; g.font = '12px Inter'; g.fillText('Open a comp in AE and press Refresh', 14, 24); return; }
-    const top = this.cfg.view === 'top';
-    // horizontal axis: x (top) or z (side); vertical: z (top, depth goes up) or y (side)
+    if (!s) { g.fillStyle = 'rgba(247,247,248,.4)'; g.font = '12px Inter'; g.fillText('Open a comp in After Effects', 12, 22); return; }
+    const top = this.c.view === 'top';
     const P = (p: number[]) => (top ? [p[0], p[2]] : [p[2], p[1]]);
     const pts = [...s.layers.map((l) => P(l.pos)), P(s.cam)];
-    if (s.rig) pts.push(P(s.rig.pos));
-    let x0 = Math.min(...pts.map((p) => p[0])), x1 = Math.max(...pts.map((p) => p[0]));
-    let y0 = Math.min(...pts.map((p) => p[1])), y1 = Math.max(...pts.map((p) => p[1]));
-    const padX = Math.max(200, (x1 - x0) * 0.15), padY = Math.max(200, (y1 - y0) * 0.15);
-    x0 -= padX; x1 += padX; y0 -= padY; y1 += padY;
+    let x0 = Math.min(...pts.map((p) => p[0])), x1 = Math.max(...pts.map((p) => p[0])), y0 = Math.min(...pts.map((p) => p[1])), y1 = Math.max(...pts.map((p) => p[1]));
+    const pad = Math.max(250, (x1 - x0) * 0.12, (y1 - y0) * 0.12);
+    x0 -= pad; x1 += pad; y0 -= pad; y1 += pad;
     const sc = Math.min(W / (x1 - x0), H / (y1 - y0));
-    const ox = (W - (x1 - x0) * sc) / 2 - x0 * sc, oy = top ? H - ((H - (y1 - y0) * sc) / 2 - y0 * sc) : (H - (y1 - y0) * sc) / 2 - y0 * sc;
-    const S = (p: number[]): [number, number] => { const q = P(p); return top ? [ox + q[0] * sc, oy - q[1] * sc] : [ox + q[0] * sc, oy + q[1] * sc]; };
-    this.vmap = { s: sc, ox, oy };
-    // grid
-    g.strokeStyle = 'rgba(255,255,255,.05)';
-    g.lineWidth = 1;
-    const step = Math.pow(10, Math.floor(Math.log10((x1 - x0) / 6)));
-    for (let x = Math.ceil(x0 / step) * step; x < x1; x += step) { const X = ox + x * sc; g.beginPath(); g.moveTo(X, 0); g.lineTo(X, H); g.stroke(); }
-    // comp plane at z=0
-    const zp = S([0, 0, 0]);
-    g.strokeStyle = 'rgba(209,254,23,.18)';
-    g.setLineDash([4, 4]);
-    g.beginPath();
-    if (top) { g.moveTo(0, zp[1]); g.lineTo(W, zp[1]); } else { g.moveTo(zp[0], 0); g.lineTo(zp[0], H); }
-    g.stroke();
-    g.setLineDash([]);
-    // layers
+    const ox = (W - (x1 - x0) * sc) / 2 - x0 * sc;
+    const S = (p: number[]): [number, number] => { const q = P(p); return top ? [ox + q[0] * sc, H - ((H - (y1 - y0) * sc) / 2 + (q[1] - y0) * sc)] : [ox + q[0] * sc, (H - (y1 - y0) * sc) / 2 + (q[1] - y0) * sc]; };
     for (const l of s.layers) {
       const c = S(l.pos);
-      const half = ((top ? l.w : l.h) * Math.abs(l.scale[top ? 0 : 1]) / 100 / 2) * sc;
-      const ang = top ? ((l.rot[1] ?? 0) * Math.PI) / 180 : ((l.rot[0] ?? 0) * Math.PI) / 180;
-      g.strokeStyle = l.sel ? '#d1fe17' : l.threeD ? 'rgba(255,255,255,.75)' : 'rgba(255,255,255,.3)';
+      const half = (((top ? l.w : l.h) * Math.abs(l.scale[top ? 0 : 1])) / 200) * sc;
+      g.strokeStyle = l.sel ? '#d1fe17' : l.threeD ? 'rgba(255,255,255,.7)' : 'rgba(255,255,255,.25)';
       g.lineWidth = l.sel ? 3 : 2;
-      g.beginPath();
-      g.moveTo(c[0] - Math.cos(ang) * half, c[1] - Math.sin(ang) * half);
-      g.lineTo(c[0] + Math.cos(ang) * half, c[1] + Math.sin(ang) * half);
-      g.stroke();
-      g.fillStyle = l.sel ? '#d1fe17' : 'rgba(247,247,248,.55)';
-      g.font = '10px Inter';
-      g.fillText(l.name.slice(0, 16), c[0] + 4, c[1] - 6);
+      g.beginPath(); g.moveTo(c[0] - half, c[1]); g.lineTo(c[0] + half, c[1]); g.stroke();
     }
-    // camera
-    const cp = S(s.cam), tp = s.rig ? S(s.rig.pos) : S([s.comp.w / 2, s.comp.h / 2, 0]);
-    g.strokeStyle = 'rgba(76,201,240,.5)';
-    g.beginPath(); g.moveTo(cp[0], cp[1]); g.lineTo(tp[0], tp[1]); g.stroke();
+    const cp = S(s.cam), tp = S(s.rig?.pos ?? [s.comp.w / 2, s.comp.h / 2, 0]);
     const dir = Math.atan2(tp[1] - cp[1], tp[0] - cp[0]);
-    const fov = s.rig ? Math.atan((s.comp.w / 2) / (s.comp.w * s.rig.focal / 36)) : 0.35;
-    g.fillStyle = 'rgba(76,201,240,.12)';
-    g.beginPath(); g.moveTo(cp[0], cp[1]);
-    g.lineTo(cp[0] + Math.cos(dir - fov) * 400, cp[1] + Math.sin(dir - fov) * 400);
-    g.lineTo(cp[0] + Math.cos(dir + fov) * 400, cp[1] + Math.sin(dir + fov) * 400);
-    g.closePath(); g.fill();
+    const fov = Math.atan((s.comp.w / 2) / (s.comp.w * (s.rig?.focal ?? 50) / 36));
+    g.fillStyle = 'rgba(76,201,240,.13)';
+    g.beginPath(); g.moveTo(cp[0], cp[1]); g.lineTo(cp[0] + Math.cos(dir - fov) * 900, cp[1] + Math.sin(dir - fov) * 900); g.lineTo(cp[0] + Math.cos(dir + fov) * 900, cp[1] + Math.sin(dir + fov) * 900); g.closePath(); g.fill();
     g.fillStyle = '#4cc9f0';
     g.beginPath(); g.arc(cp[0], cp[1], 6, 0, 7); g.fill();
-    g.beginPath(); g.arc(tp[0], tp[1], 3.5, 0, 7); g.fill();
-    g.fillStyle = 'rgba(247,247,248,.5)';
-    g.fillText(top ? 'TOP · X / Z' : 'SIDE · Z / Y', 10, 16);
-  }
-
-  private bindCanvas() {
-    const cv = this.canvas;
-    const hit = (mx: number, my: number) => {
-      const s = this.scene;
-      if (!s) return -1;
-      const top = this.cfg.view === 'top', { s: sc, ox, oy } = this.vmap;
-      let best = -1, bd = 14;
-      s.layers.forEach((l, i) => {
-        const q = top ? [ox + l.pos[0] * sc, oy - l.pos[2] * sc] : [ox + l.pos[2] * sc, oy + l.pos[1] * sc];
-        const d = Math.hypot(q[0] - mx, q[1] - my);
-        if (d < bd) { bd = d; best = i; }
-      });
-      return best;
-    };
-    cv.addEventListener('pointerdown', (e) => {
-      const r = cv.getBoundingClientRect();
-      const i = hit(e.clientX - r.left, e.clientY - r.top);
-      if (i < 0) return;
-      cv.setPointerCapture(e.pointerId);
-      this.drag = { li: i, ox: e.clientX, oy: e.clientY };
-    });
-    cv.addEventListener('pointermove', (e) => {
-      if (!this.drag || !this.scene) return;
-      const l = this.scene.layers[this.drag.li];
-      const dx = (e.clientX - this.drag.ox) / this.vmap.s, dy = (e.clientY - this.drag.oy) / this.vmap.s;
-      this.drag.ox = e.clientX; this.drag.oy = e.clientY;
-      if (this.cfg.view === 'top') { l.pos[0] += dx; l.pos[2] -= dy; } else { l.pos[2] += dx; l.pos[1] += dy; }
-      this.draw();
-    });
-    cv.addEventListener('pointerup', () => {
-      if (!this.drag || !this.scene) return;
-      const l = this.scene.layers[this.drag.li];
-      this.drag = null;
-      call('camLayout', { items: [{ index: l.index, pos: l.pos.map((v) => Math.round(v * 10) / 10) }] }).then(() => this.refresh()).catch((e) => toast(e.message, 'err'));
-    });
-    new ResizeObserver(() => this.draw()).observe(cv);
-    onRefresh(cv, () => {});
+    g.beginPath(); g.arc(tp[0], tp[1], 3, 0, 7); g.fill();
   }
 }
