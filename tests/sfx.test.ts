@@ -65,3 +65,18 @@ describe('auto-sfx v3 gestures', () => {
     expect(segment(E, 30).length).toBe(1);
   });
 });
+
+import { blendPacks } from '../src/sound/mixer';
+describe('mixing sound styles', () => {
+  it('blends sources from every picked style', () => {
+    const p = blendPacks(['tickle', 'water']);
+    const cats = (p.map.enter ?? []).map((s) => ('cat' in s ? s.cat : s.synth));
+    expect(cats).toContain('pop');
+    expect(cats).toContain('water');
+    expect(p.mixAll).toBe(true);
+  });
+  it('a per-motion override wins over the styles', () => {
+    const p = blendPacks(['tickle'], { impact: ['mallet'] });
+    expect((p.map.land ?? []).every((s) => 'cat' in s && s.cat === 'mallet')).toBe(true);
+  });
+});
