@@ -35,8 +35,8 @@
           <Type>Panel</Type>
           <Menu>Kinetix</Menu>
           <Geometry>
-            <Size><Height>820</Height><Width>1280</Width></Size>
-            <MinSize><Height>420</Height><Width>520</Width></MinSize>
+            <Size><Height>720</Height><Width>1000</Width></Size>
+            <MinSize><Height>360</Height><Width>300</Width></MinSize>
             <MaxSize><Height>4000</Height><Width>6000</Width></MaxSize>
           </Geometry>
         </UI>

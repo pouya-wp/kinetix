@@ -41,7 +41,7 @@ function boot() {
 
   let active: Studio = studios[0];
   const tabBtns = tabsDef.map((t) => {
-    const b = h('button', { class: 'tab' }, svg(I[t.icon]), t.label, t.badge ? h('span', { class: 'new' }, t.badge) : null);
+    const b = h('button', { class: 'tab', title: t.label }, svg(I[t.icon]), h('span', { class: 'lbl-text' }, t.label), t.badge ? h('span', { class: 'new' }, t.badge) : null);
     b.addEventListener('click', () => select(t.id));
     tabs.appendChild(b);
     return b;
@@ -57,13 +57,16 @@ function boot() {
     try { localStorage.setItem('kinetix.tab', id); } catch { /* */ }
   };
 
+  const inspectorBtn = h('button', { class: 'btn btn-sm inspector-toggle', title: 'Show / hide the inspector (Tab)' }, svg(I.wand), 'Inspector');
   const status = h('div', { class: 'status' + (inAE ? ' on' : ''), title: inAE ? 'Connected to After Effects' : 'Running in browser preview (mock AE)' }, h('i'), h('span', null, inAE ? 'After Effects' : 'Preview mode'));
   const topbar = h('header', { class: 'topbar' },
     h('div', { class: 'brand' }, h('div', { class: 'logo-mark', html: LOGO }), h('span', { class: 'brand-name' }, 'KINETIX'), h('span', { class: 'brand-ver' }, 'PRO')),
     tabs,
-    h('div', { class: 'top-actions' }, status),
+    h('div', { class: 'top-actions' }, inspectorBtn, status),
   );
-  document.body.appendChild(h('div', { class: 'app' }, topbar, main));
+  const app = h('div', { class: 'app' }, topbar, main);
+  inspectorBtn.addEventListener('click', () => { app.classList.toggle('show-inspector'); inspectorBtn.classList.toggle('on', app.classList.contains('show-inspector')); });
+  document.body.appendChild(app);
   let initial = 'bounce';
   try { initial = localStorage.getItem('kinetix.tab') || 'bounce'; } catch { /* */ }
   select(initial);
@@ -81,6 +84,7 @@ function boot() {
     if (k === ' ') { e.preventDefault(); clock.toggle(); return; }
     if (k === 'ArrowRight') { e.preventDefault(); clock.step(1); return; }
     if (k === 'ArrowLeft') { e.preventDefault(); clock.step(-1); return; }
+    if (k === 'Tab' && !e.ctrlKey) { e.preventDefault(); inspectorBtn.click(); return; }
     if (k === 'Home') { clock.pause(); clock.seek(0); return; }
     if (k === 'End') { clock.pause(); clock.seek(clock.duration); return; }
   });

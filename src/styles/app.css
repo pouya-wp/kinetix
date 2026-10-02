@@ -331,3 +331,64 @@ select.input option { background: var(--surface-2); }
   .side { width: 260px; }
   .brand-ver, .status span { display: none; }
 }
+
+/* ═════════ Responsive layouts ═════════ */
+.inspector-toggle { display: none; }
+
+/* Laptop: the inspector becomes a slide-over drawer */
+@media (max-width: 1180px) {
+  .side { width: 268px; }
+  .inspector-toggle { display: inline-flex; }
+  .view { position: relative; }
+  .view > .side.right {
+    position: absolute; top: 0; right: 0; bottom: 0; z-index: 20;
+    width: min(320px, 86vw);
+    background: rgba(15, 17, 19, 0.97); backdrop-filter: blur(16px);
+    box-shadow: -20px 0 50px rgba(0, 0, 0, 0.55);
+    transform: translateX(105%); transition: transform var(--t) var(--ease);
+  }
+  .app.show-inspector .view > .side.right { transform: none; }
+  .tab { padding: 0 9px; font-size: 13px; }
+  .brand-ver { display: none; }
+}
+
+/* Narrow / vertical panel: one column, stage pinned on top */
+@media (max-width: 760px) {
+  html, body { font-size: 12.5px; }
+  .app { grid-template-rows: 44px 1fr; }
+  .topbar { gap: 8px; padding: 0 8px; }
+  .brand-name, .status span, .tab .new { display: none; }
+  .tab { height: 32px; padding: 0 8px; gap: 0; }
+  .tab .lbl-text { display: none; }
+  .tab svg { width: 18px; height: 18px; opacity: 1; }
+  .inspector-toggle { display: none; }
+  .view.active { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
+  .view > .stage {
+    order: -1; flex: none; position: sticky; top: 0; z-index: 10;
+    height: 46vh; min-height: 230px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  }
+  .view > div[style*="flex: 1"] { flex: none !important; overflow: visible !important; padding: 16px 12px 20px !important; }
+  .view > .side, .view > .side.right {
+    position: static; width: 100% !important; transform: none; box-shadow: none; backdrop-filter: none;
+    overflow: visible; border: 0; padding-bottom: 6px; background: transparent;
+  }
+  .section-head { padding: 11px 12px 8px; }
+  .section-body { padding: 2px 12px 12px; gap: 9px; }
+  .stage-hint { display: none; }
+  .transport { height: 48px; gap: 8px; padding: 0 10px; }
+  .play { width: 32px; height: 32px; }
+  .time { min-width: 0; font-size: 11px; }
+  .stage-top { top: 22px; left: 22px; right: 8px; }
+  .toolbar .btn { height: 28px; width: 28px; padding: 0; }
+  .zoom span { min-width: 38px; }
+  .cards { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+  .btn-lg { height: 42px; font-size: 14px; }
+}
+
+/* Short panels: tighten vertical rhythm */
+@media (max-height: 640px) {
+  .app { grid-template-rows: 44px 1fr; }
+  .section-head { padding-top: 10px; }
+  .section-body { gap: 8px; }
+  .transport { height: 48px; }
+}
