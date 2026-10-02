@@ -46,3 +46,7 @@ registerMock('easeApplyKeys', () => ({ keys: 4, props: 2 }));
 registerMock('exprApply', () => ({ props: 2 }));
 registerMock('animApply', (r: any) => { console.log('[mock] animApply', r); return { layers: 2, warnings: [] }; });
 registerMock('animClear', () => ({ layers: 2 }));
+registerMock('typeApply', (r: any) => { console.log('[mock] typeApply', r); return { layers: 1 }; });
+registerMock('typeClear', () => ({ layers: 1 }));
+registerMock('physScene', () => ({ comp: { w: 1920, h: 1080, fps: 30, time: 0 }, layers: [] }));
+registerMock('physBake', (p: any) => { console.log('[mock] physBake', p); return { layers: p.items.length }; });

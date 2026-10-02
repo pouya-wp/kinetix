@@ -1608,3 +1608,114 @@ KX.camCuts = function () {
   app.endUndoGroup();
   return { cameras: cams.length };
 };
+
+// --------- Type animator (live AE text animators) ---------
+KX._TYPE_PROPS = { pos: 'ADBE Text Position 3D', scale: 'ADBE Text Scale 3D', rot: 'ADBE Text Rotation', rotX: 'ADBE Text Rotation X', rotY: 'ADBE Text Rotation Y',
+  opacity: 'ADBE Text Opacity', blur: 'ADBE Text Blur', tracking: 'ADBE Text Tracking Amount', skew: 'ADBE Text Skew', charOffset: 'ADBE Text Character Offset', fillHue: 'ADBE Text Fill Hue' };
+
+KX._typeClearLayer = function (L) {
+  var an = L.property('ADBE Text Properties').property('ADBE Text Animators');
+  for (var i = an.numProperties; i >= 1; i--) if (an.property(i).name.indexOf('KX Type') === 0) an.property(i).remove();
+  var fx = L.property('ADBE Effect Parade');
+  for (var j = fx.numProperties; j >= 1; j--) if (fx.property(j).name.indexOf('KX Type') === 0) fx.property(j).remove();
+};
+
+KX.typeApply = function (r) {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, n = 0;
+  app.beginUndoGroup('Kinetix Type');
+  for (var s = 0; s < sel.length; s++) {
+    var L = sel[s];
+    if (!(L instanceof TextLayer)) continue;
+    KX._typeClearLayer(L);
+    for (var c = 0; c < r.controls.length; c++) KX._ensureSlider(L, r.controls[c].name, r.controls[c].value);
+    if (r.threeD) { try { L.threeDPerChar = true; } catch (e3) {} }
+    try {
+      var mo = L.property('ADBE Text Properties').property('ADBE Text More Options');
+      mo.property('ADBE Text Anchor Point Option').setValue(r.grouping);
+      mo.property('ADBE Text Anchor Point Align').setValue([0, -50]);
+    } catch (e4) {}
+    var animators = function () { return L.property('ADBE Text Properties').property('ADBE Text Animators'); };
+    for (var a = 0; a < r.animators.length; a++) {
+      var spec = r.animators[a];
+      animators().addProperty('ADBE Text Animator');
+      var ai = animators().numProperties;
+      animators().property(ai).name = spec.name;
+      for (var k in spec.props) {
+        if (!spec.props.hasOwnProperty(k) || !KX._TYPE_PROPS[k]) continue;
+        var mn = KX._TYPE_PROPS[k], v = spec.props[k];
+        try {
+          animators().property(ai).property('ADBE Text Animator Properties').addProperty(mn);
+          var pr = animators().property(ai).property('ADBE Text Animator Properties').property(mn);
+          if (k === 'blur') v = [v, v];
+          pr.setValue(v);
+        } catch (e5) {}
+      }
+      animators().property(ai).property('ADBE Text Selectors').addProperty('ADBE Text Expressible Selector');
+      var sels = animators().property(ai).property('ADBE Text Selectors'), ex = null;
+      for (var q = 1; q <= sels.numProperties; q++) if (sels.property(q).matchName === 'ADBE Text Expressible Selector') ex = sels.property(q);
+      try { ex.property('ADBE Text Range Type2').setValue(spec.basedOn); } catch (e6) {}
+      ex.property('ADBE Text Expressible Amount').expression = spec.amount;
+    }
+    n++;
+  }
+  app.endUndoGroup();
+  if (!n) throw new Error('Select one or more text layers first.');
+  return { layers: n };
+};
+
+KX.typeClear = function () {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, n = 0;
+  app.beginUndoGroup('Kinetix Type Clear');
+  for (var s = 0; s < sel.length; s++) if (sel[s] instanceof TextLayer) { KX._typeClearLayer(sel[s]); n++; }
+  app.endUndoGroup();
+  return { layers: n };
+};
+
+// --------- Physics ---------
+KX.physScene = function () {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, out = [];
+  for (var i = 0; i < sel.length; i++) {
+    var L = sel[i];
+    if (L instanceof CameraLayer || L instanceof LightLayer) continue;
+    var tf = L.property('ADBE Transform Group');
+    var r = L.sourceRectAtTime(comp.time, false);
+    var pos = tf.property('ADBE Position').valueAtTime(comp.time, false), an = tf.property('ADBE Anchor Point').valueAtTime(comp.time, false);
+    var sc = tf.property('ADBE Scale').valueAtTime(comp.time, false), rot = tf.property('ADBE Rotate Z').valueAtTime(comp.time, false);
+    var a = rot * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+    var lx = (r.left + r.width / 2 - an[0]) * sc[0] / 100, ly = (r.top + r.height / 2 - an[1]) * sc[1] / 100;
+    var ox = lx * ca - ly * sa, oy = lx * sa + ly * ca;
+    out.push({ index: L.index, name: L.name, cx: pos[0] + ox, cy: pos[1] + oy, w: r.width * Math.abs(sc[0]) / 100, h: r.height * Math.abs(sc[1]) / 100, rot: rot, offX: ox, offY: oy, pos: pos,
+      kind: L instanceof TextLayer ? 'text' : L instanceof ShapeLayer ? 'shape' : 'footage' });
+  }
+  return { comp: { w: comp.width, h: comp.height, fps: comp.frameRate, time: comp.time }, layers: out };
+};
+
+KX.physBake = function (p) {
+  var comp = KX._comp(null, false);
+  var t0 = comp.time, n = 0;
+  app.beginUndoGroup('Kinetix Physics');
+  for (var i = 0; i < p.items.length; i++) {
+    var it = p.items[i], L = comp.layer(it.index);
+    if (!L) continue;
+    var tf = L.property('ADBE Transform Group'), pos = tf.property('ADBE Position');
+    if (pos.dimensionsSeparated) pos.dimensionsSeparated = false;
+    var z = L.threeDLayer ? pos.valueAtTime(t0, false)[2] : null;
+    var vals = [];
+    for (var k = 0; k < it.pos.v.length; k++) vals.push(z === null ? it.pos.v[k] : [it.pos.v[k][0], it.pos.v[k][1], z]);
+    KX._keys(pos, { t: it.pos.t, v: vals }, t0, true);
+    KX._linearSpatial(pos);
+    KX._keys(tf.property('ADBE Rotate Z'), it.rot, t0, true);
+    KX._ensureDuration(comp, t0 + it.pos.t[it.pos.t.length - 1] + 0.5);
+    n++;
+  }
+  for (var h = 0; h < p.hits.length; h++) {
+    var H = p.hits[h], HL = comp.layer(H.index);
+    if (!HL) continue;
+    try { HL.property('ADBE Marker').setValueAtTime(t0 + H.t, new MarkerValue('KX:hit ' + H.speed + ' x' + Math.round(H.x * 100))); } catch (e) {}
+  }
+  app.endUndoGroup();
+  return { layers: n };
+};
