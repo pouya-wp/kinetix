@@ -141,8 +141,8 @@ export class TextStudio implements Studio {
 
   // ───────── left ─────────
   private sourceSection() {
-    return Section('Source', [
-      Btn('Analyze selected text layers', () => this.analyze(), { variant: 'soft', block: true, icon: 'import' }),
+    return Section('1 · Your subtitles', [
+      Btn('Get subtitles from selected layers', () => this.analyze(), { variant: 'soft', block: true, icon: 'import' }),
       h('div', { class: 'row' },
         Btn('Import SRT', () => this.importSRT(), { size: 'sm', icon: 'open' }),
         Btn('Demo subtitles', () => this.loadDemo(), { size: 'sm', icon: 'wand' })),
@@ -155,6 +155,8 @@ export class TextStudio implements Studio {
     const L = () => T().lines.find((l) => l.id === T().sel) ?? null;
     const box = h('div', { class: 'stack' });
     const sl = (label: string, k: 't0' | 't1') => Slider({ label, min: 0, max: Math.max(10, this.engine.duration + 2), step: 0.01, get: () => L()?.[k] ?? 0, set: (v, f) => store.set((s) => { const l = s.text.lines.find((x) => x.id === T().sel); if (l) l[k] = v; }, f), begin: () => store.begin() });
+    // only meaningful once a line is selected
+    onRefresh(box, () => { box.style.display = L() ? '' : 'none'; });
     box.append(
       Field('Text', TextInput({ get: () => L()?.text ?? '', set: (v) => { const l = L(); if (!l || l.layer > 0) { toast('Text of AE layers is edited in AE (then Analyze again)', 'info'); return; } this.geos.delete(l.id); store.set((s) => { const x = s.text.lines.find((q) => q.id === l.id); if (x) x.text = v; }); } })),
       h('div', { class: 'row' }, sl('In (s)', 't0'), sl('Out (s)', 't1')),
@@ -279,8 +281,8 @@ export class TextStudio implements Studio {
     queueMicrotask(markCards);
 
     this.right.append(
-      Section('1 · Quick looks', [Chips(PRESETS.map((p) => ({ value: p.id, label: p.label })), () => '', (v) => { store.set((s) => PRESETS.find((p) => p.id === v)!.apply(s.text)); toast('Preset applied'); })], { color: 'var(--violet)' }),
-      Section('2 · Morph style', [
+      Section('Quick looks', [Chips(PRESETS.map((p) => ({ value: p.id, label: p.label })), () => '', (v) => { store.set((s) => PRESETS.find((p) => p.id === v)!.apply(s.text)); toast('Preset applied'); })], { color: 'var(--violet)' }),
+      Section('Morph style', [
         cards,
         More('text-style-adv', [
         Toggle('Random style per transition', () => t().randomize, (v) => set((x) => { x.randomize = v; })),
@@ -294,7 +296,7 @@ export class TextStudio implements Studio {
         Swatches((c) => set((x) => { x.textColor = c; })),
         ], 'Fine control'),
       ], { color: 'var(--lime)' }),
-      Section('3 · Text box', [
+      Section('Text box', [
         Toggle('Background box', () => t().boxOn, (v) => set((x) => { x.boxOn = v; })),
         Chips((Object.keys(BOX_INFO) as BoxStyle[]).map((b) => ({ value: b, label: BOX_INFO[b] })), () => t().box.style, (v) => set((x) => { x.box.style = v; x.boxOn = true; })),
         h('div', { class: 'row' },
