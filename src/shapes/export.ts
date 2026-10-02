@@ -29,7 +29,7 @@ function decimate(poly: Poly, max: number): Poly {
   return poly.filter((_, i) => i % k === 0);
 }
 
-const toPath = (poly: Poly): PathData => {
+export const toPath = (poly: Poly): PathData => {
   const p = smoothPath(poly, true);
   const r = (v: Vec): Vec => [Math.round(v[0] * 100) / 100, Math.round(v[1] * 100) / 100];
   return { v: p.v.map(r), i: p.i.map(r), o: p.o.map(r), closed: true };
@@ -100,50 +100,54 @@ export function buildShapesPayload(state: { shapes: ShapesState; comp: Comp }, m
       const polys = members.map((m) => engine.item(m, f / fps)).filter(Boolean) as Poly[];
       perFrame.push(engine.merge(g, polys).map((l) => resample(l, N)));
     }
-    const slots: (Poly | null)[][] = [];
-    const lastSeen: (Poly | null)[] = [];
-    perFrame.forEach((loops, f) => {
-      const used = new Set<number>();
-      const assign: (Poly | null)[] = new Array(slots.length).fill(null);
-      // greedy match by centroid distance (holes and outers matched separately by sign)
-      const order = loops.map((l, i) => ({ l, i, c: centroid(l), s: Math.sign(signedArea(l)) }));
-      for (let si = 0; si < slots.length; si++) {
-        const ref = lastSeen[si];
-        if (!ref) continue;
-        const rc = centroid(ref), rs = Math.sign(signedArea(ref));
-        let best = -1, bd = Infinity;
-        for (const o of order) {
-          if (used.has(o.i) || o.s !== rs) continue;
-          const d = Math.hypot(o.c[0] - rc[0], o.c[1] - rc[1]);
-          if (d < bd) { bd = d; best = o.i; }
-        }
-        if (best >= 0) { used.add(best); assign[si] = align(ref, loops[best]); }
-      }
-      for (const o of order) {
-        if (used.has(o.i)) continue;
-        slots.push(new Array(f).fill(null));
-        lastSeen.push(null);
-        assign.push(o.l);
-      }
-      assign.forEach((p, si) => { slots[si][f] = p; if (p) lastSeen[si] = p; });
-    });
-    // fill gaps with collapsed points so the slot fades in/out from a dot
-    const paths: PathKeys[] = slots.map((seq) => {
-      const firstIdx = seq.findIndex(Boolean);
-      const t: number[] = [], v: PathData[] = [];
-      let last: Poly | null = seq[firstIdx] ?? null;
-      seq.forEach((p, f) => {
-        if (p) last = p;
-        const src = p ?? last!;
-        const poly = p ?? collapse(src);
-        t.push(f / fps);
-        v.push(toPath(poly));
-      });
-      return { t, v };
-    });
+    const paths = loopsToSlots(perFrame, perFrame.map((_, f) => f / fps));
     layers.push({ name: g.name, color: hexToRgb(g.color), stroke: null, strokeW: 0, opacity: 100, kind: 'baked', paths });
   }
   return { comp, layers, mode };
+}
+
+/**
+ * Per-frame loop lists (count changes as blobs split/merge) → a fixed set of
+ * path slots matched frame-to-frame by centroid, so AE gets stable paths.
+ * Missing slots collapse to a dot (zero area) so blobs pop in/out cleanly.
+ */
+export function loopsToSlots(perFrame: Poly[][], times: number[], N = 72): PathKeys[] {
+  const frames = perFrame.map((loops) => loops.map((l) => (l.length === N ? l : resample(l, N))));
+  const slots: (Poly | null)[][] = [];
+  const lastSeen: (Poly | null)[] = [];
+  frames.forEach((loops, f) => {
+    const used = new Set<number>();
+    const assign: (Poly | null)[] = new Array(slots.length).fill(null);
+    const order = loops.map((l, i) => ({ l, i, c: centroid(l), s: Math.sign(signedArea(l)) }));
+    for (let si = 0; si < slots.length; si++) {
+      const ref = lastSeen[si];
+      if (!ref) continue;
+      const rc = centroid(ref), rs = Math.sign(signedArea(ref));
+      let best = -1, bd = Infinity;
+      for (const o of order) {
+        if (used.has(o.i) || o.s !== rs) continue;
+        const d = Math.hypot(o.c[0] - rc[0], o.c[1] - rc[1]);
+        if (d < bd) { bd = d; best = o.i; }
+      }
+      if (best >= 0) { used.add(best); assign[si] = align(ref, loops[best]); }
+    }
+    for (const o of order) {
+      if (used.has(o.i)) continue;
+      slots.push(new Array(f).fill(null));
+      lastSeen.push(null);
+      assign.push(o.l);
+    }
+    assign.forEach((p, si) => { slots[si][f] = p; if (p) lastSeen[si] = p; });
+  });
+  return slots.map((seq) => {
+    const firstIdx = seq.findIndex(Boolean);
+    let last: Poly | null = seq[firstIdx] ?? null;
+    const v: PathData[] = seq.map((p) => {
+      if (p) last = p;
+      return toPath(p ?? collapse(last!));
+    });
+    return { t: times.slice(0, seq.length), v };
+  });
 }
 
 function collapse(poly: Poly): Poly {

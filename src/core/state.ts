@@ -117,6 +117,10 @@ export interface TextState {
   textColor: string;
   output: 'shapes' | 'live';
   disableOriginals: boolean;
+  intro: boolean;
+  outro: boolean;
+  liquidBlend: number;
+  caseSensitive: boolean;
 }
 
 // ───────── Render ─────────
@@ -169,7 +173,7 @@ export function initialState(): RootState {
       lines: [], sel: null, policy: 'fill', dur: 0.45, minDur: 0.15, maxDur: 0.8, style: 'magic', randomize: false,
       stagger: 0.25, travel: 'arc', overshoot: 0.35, seed: 7, boxOn: true,
       box: { style: 'spring', padX: 36, padY: 20, radius: 22, pill: false, minW: 0, color: '#ffffff', opacity: 100, stiffness: 220, damping: 16, intensity: 1, lag: 0.04 },
-      textColor: '#111111', output: 'shapes', disableOriginals: true,
+      textColor: '#111111', output: 'shapes', disableOriginals: true, intro: true, outro: true, liquidBlend: 38, caseSensitive: false,
     },
     render: { preset: 'yt-4k', over: {}, outDir: '', ffmpeg: '', engine: 'ffmpeg', reframe: 'blur', batch: [], keepIntermediate: false, useWorkArea: false },
   };

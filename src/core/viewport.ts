@@ -37,6 +37,7 @@ export class Viewport {
   hoverWorld: Vec | null = null;
 
   constructor(private draw: (ctx: CanvasRenderingContext2D, vp: Viewport) => void, private overlay?: (ctx: CanvasRenderingContext2D, vp: Viewport) => void) {
+    ((window as any).__kxvps ??= []).push(this);
     this.canvas = h('canvas');
     this.ctx = this.canvas.getContext('2d')!;
     this.el = h('div', { class: 'stage-canvas' }, this.canvas);
