@@ -1,9 +1,9 @@
-import { h, Slider, Seg, Btn, Toggle, toast, refreshAll, icon } from '../ui/kit';
+import { h, Slider, Seg, Btn, Toggle, toast, refreshAll, icon, Chips, Select } from '../ui/kit';
 import { Flow, Step, More, Picks } from '../ui/flow';
 import { call, inAE } from '../core/ae-bridge';
 import { registerCommands } from '../core/commands';
 import { simplifyKeys } from '../core/math';
-import { simulate, previewPieces, RECIPES, type PhysLayer, type PhysParams, type SimResult } from './sim';
+import { simulate, previewPieces, RECIPES, type PhysLayer, type PhysParams, type SimResult, type Role } from './sim';
 import type { Studio } from '../main';
 
 const LS = 'kinetix.physics';
@@ -48,6 +48,7 @@ export class PhysicsStudio implements Studio {
           Slider({ label: 'Bounciness', min: 0, max: 1.1, step: 0.01, get: () => p.bounce, set: (v, f) => set('bounce')(v, f) }),
           Slider({ label: 'Gravity', min: -2, max: 3, step: 0.05, get: () => p.gravity, set: (v, f) => set('gravity')(v, f) })),
       ]),
+      Step(3, 'Build your world', [this.world], 'optional — like Newton'),
       More('phys-adv', [
         h('div', { class: 'lbl' }, 'Layers in the simulation'),
         this.list,
@@ -93,6 +94,7 @@ export class PhysicsStudio implements Studio {
     L.push(ex('L-shape', 1300, 220, [[lshape]]), ex('Star', 1550, 160, [[star(130, 55, 5)]]), ex('Star→Circle', 1020, 120, morph, true));
     this.layers = L;
     this.renderList();
+    this.renderWorld();
     this.run();
   }
 
@@ -102,11 +104,51 @@ export class PhysicsStudio implements Studio {
       if (!r.layers.length) { toast('Select some layers first', 'info'); return; }
       this.comp = r.comp;
       this.layers = r.layers;
+      this.p.joints = [];
       this.renderList();
+    this.renderWorld();
       this.run(true);
       toast(`Imported ${r.layers.length} layer(s)` + (r.layers.some((l) => l.morphing) ? ' · morphing outlines tracked' : ''));
     } catch (e: any) { toast(e.message, 'err', 6000); }
   }
+
+  private world = h('div', { class: 'stack' });
+  private link = { a: 0, b: -1, type: 'rope' as 'rope' | 'spring' | 'rod' };
+  /** Roles per layer and links between layers. */
+  private renderWorld() {
+    const w = this.world;
+    w.innerHTML = '';
+    if (!this.layers.length) { w.appendChild(h('div', { class: 'hint' }, 'Press “Use selected layers” first.')); return; }
+    const ROLES: { value: Role; label: string }[] = [{ value: 'dynamic', label: 'Moves' }, { value: 'static', label: 'Fixed' }, { value: 'container', label: 'Box' }, { value: 'pinned', label: 'Pinned' }];
+    w.appendChild(h('div', { class: 'hint' }, 'Fixed = a floor, shelf or obstacle. Box = the others bounce around inside its shape. Pinned = hangs at its anchor and swings.'));
+    this.layers.forEach((l, i) => {
+      w.appendChild(h('div', { class: 'hstack', style: { flexWrap: 'wrap', gap: '8px' } },
+        h('span', { class: 'sw-dot', style: { background: COLORS[i % COLORS.length] } }),
+        h('b', { style: { minWidth: '90px', fontSize: '12.5px' } }, l.name),
+        Chips(ROLES, () => l.role ?? 'dynamic', (v) => { l.role = v; this.run(true); })));
+    });
+    const opts = this.layers.map((l, i) => ({ value: String(i), label: l.name }));
+    w.append(
+      h('div', { class: 'lbl' }, 'Connect two layers'),
+      h('div', { class: 'row wrap' },
+        Select(opts, () => String(this.link.a), (v) => { this.link.a = +v; }),
+        Select([{ value: '-1', label: '↑ a point above' }, ...opts], () => String(this.link.b), (v) => { this.link.b = +v; })),
+      h('div', { class: 'row wrap' },
+        Chips<'rope' | 'spring' | 'rod'>([{ value: 'rope', label: 'Rope' }, { value: 'spring', label: 'Spring' }, { value: 'rod', label: 'Rod' }], () => this.link.type, (v) => { this.link.type = v; }),
+        Btn('+ Connect', () => {
+          const { a, b, type } = this.link;
+          if (a === b) { toast('Pick two different layers', 'info'); return; }
+          (this.p.joints ??= []).push({ a, b: b < 0 ? null : b, type, slack: 0.08 });
+          this.renderWorld(); this.run(true);
+        }, { size: 'sm', variant: 'soft' })),
+      ...(this.p.joints ?? []).map((j, k) => h('div', { class: 'hstack' },
+        h('span', { class: 'grow hint' }, `${j.type === 'rope' ? 'Rope' : j.type === 'spring' ? 'Spring' : 'Rod'}: ${this.layers[j.a]?.name ?? '?'} → ${j.b === null ? 'point above' : this.layers[j.b]?.name ?? '?'}`),
+        Btn('', () => { this.p.joints!.splice(k, 1); this.renderWorld(); this.run(true); }, { icon: 'x', size: 'sm', title: 'Remove link' }))),
+      Toggle('Draw ropes / springs as lines in AE', () => this.drawLinks, (v) => { this.drawLinks = v; }),
+    );
+    refreshAll();
+  }
+  private drawLinks = true;
 
   private renderList() {
     this.list.innerHTML = '';
@@ -150,14 +192,24 @@ export class PhysicsStudio implements Studio {
     for (let x = 0; x < this.comp.w; x += 120) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, this.comp.h); g.stroke(); }
     if (this.p.floor) { g.fillStyle = 'rgba(209,254,23,.15)'; g.fillRect(0, this.comp.h - this.p.floorOffset, this.comp.w, 6); }
     const fr = this.res?.frames[Math.min(this.frame, (this.res?.frames.length ?? 1) - 1)];
+    for (const lk of this.res?.links ?? []) {
+      const pts = lk.pts[Math.min(this.frame, lk.pts.length - 1)];
+      if (!pts) continue;
+      g.strokeStyle = lk.joint.type === 'spring' ? '#4cc9f0' : '#f7f7f8';
+      g.lineWidth = lk.joint.type === 'rod' ? 10 : 5;
+      g.setLineDash(lk.joint.type === 'spring' ? [14, 10] : []);
+      g.beginPath(); pts.forEach((q, k) => (k ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]))); g.stroke();
+      g.setLineDash([]);
+    }
     this.layers.forEach((l, i) => {
       const ax = fr ? fr.x[i] : l.pos[0], ay = fr ? fr.y[i] : l.pos[1], a = fr ? fr.a[i] : (l.rot * Math.PI) / 180;
       const col = COLORS[i % COLORS.length];
       const pieces = this.p.shape === 'auto' ? previewPieces(l, this.frame, ax, ay, a) : null;
-      g.fillStyle = col + 'cc';
+      g.fillStyle = l.role === 'static' ? 'rgba(255,255,255,.28)' : col + 'cc';
       if (pieces) {
         g.beginPath();
         for (const pc of pieces) { pc.forEach((v, k) => (k ? g.lineTo(v.x, v.y) : g.moveTo(v.x, v.y))); g.closePath(); }
+        if (l.role === 'container') { g.strokeStyle = col; g.lineWidth = 8; g.stroke(); return; }
         g.fill();
         g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 2; g.stroke();
         return;
@@ -170,6 +222,8 @@ export class PhysicsStudio implements Studio {
       const circle = this.p.shape === 'circle' || (this.p.shape === 'auto' && Math.abs(l.w - l.h) < Math.min(l.w, l.h) * 0.12 && l.kind !== 'text');
       g.beginPath();
       if (circle) g.arc(0, 0, Math.min(l.w, l.h) / 2, 0, 7); else g.roundRect(-l.w / 2, -l.h / 2, l.w, l.h, 12);
+      if (l.role === 'container') { g.strokeStyle = col; g.lineWidth = 8; g.stroke(); g.restore(); return; }
+      if (l.role === 'static') g.fillStyle = 'rgba(255,255,255,.28)';
       g.fill();
       g.fillStyle = '#111';
       g.font = '600 26px Inter';
@@ -183,7 +237,7 @@ export class PhysicsStudio implements Studio {
     if (!this.res || !this.layers.length) { toast('Import layers first', 'info'); return; }
     const { frames, hits, fps } = this.res;
     const t: number[] = frames.map((_, f) => f / fps);
-    const items = this.layers.map((l, i) => {
+    const items = this.layers.map((l, i) => ({ l, i })).filter(({ l }) => l.role !== 'static' && l.role !== 'container').map(({ l, i }) => {
       const pos: number[][] = [], rot: number[][] = [];
       frames.forEach((fr) => { pos.push([fr.x[i], fr.y[i]]); rot.push([(fr.a[i] * 180) / Math.PI]); });
       const pi = simplifyKeys(t, pos, [0.3, 0.3]), ri = simplifyKeys(t, rot, [0.25]);
@@ -191,7 +245,19 @@ export class PhysicsStudio implements Studio {
     });
     try {
       const r = await call<{ layers: number }>('physBake', { items, hits: hits.map((h0) => ({ t: h0.t, index: h0.index, speed: Math.round(h0.speed), x: h0.x })) });
-      toast(`Baked ${r.layers} layer(s) · ${hits.length} hits marked`);
+      let extra = '';
+      if (this.drawLinks && this.res.links.length) {
+        const step = Math.max(1, Math.round(fps / 30));
+        const links = this.res.links.map((lk) => ({
+          label: lk.joint.type === 'rope' ? 'Rope' : lk.joint.type === 'spring' ? 'Spring' : 'Rod',
+          color: lk.joint.type === 'spring' ? [0.3, 0.79, 0.94] : [0.97, 0.97, 0.97], width: lk.joint.type === 'rod' ? 10 : 5,
+          t: lk.pts.filter((_, f) => f % step === 0).map((_, k) => (k * step) / fps),
+          frames: lk.pts.filter((_, f) => f % step === 0).map((pts) => pts.map((q) => [Math.round(q[0] * 10) / 10, Math.round(q[1] * 10) / 10])),
+        }));
+        const lr = await call<{ layers: number }>('physLinks', { links });
+        extra = ` · ${lr.layers} link layer(s)`;
+      }
+      toast(`Baked ${r.layers} layer(s) · ${hits.length} hits marked${extra}`);
     } catch (e: any) { toast(e.message, 'err', 6000); }
   }
 }

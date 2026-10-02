@@ -2498,3 +2498,38 @@ KX.selInfo = function () {
   for (var k = 1; k <= c.numLayers; k++) if (c.layer(k) instanceof CameraLayer) { cam = true; break; }
   return { comp: c.name, layers: sel.length, text: text, shape: shape, keys: keys, camera: cam };
 };
+
+// --------- Physics links: ropes / springs / rods as shape layers with baked path keys ---------
+KX.physLinks = function (p) {
+  var comp = KX._comp(null, false);
+  var t0 = comp.time, n = 0;
+  app.beginUndoGroup('Kinetix Physics Links');
+  for (var i = 0; i < p.links.length; i++) {
+    var lk = p.links[i];
+    var L = comp.layers.addShape();
+    L.name = KX._uniqueName(comp, 'KX ' + lk.label);
+    L.comment = 'kx-link';
+    var tf = L.property('ADBE Transform Group');
+    tf.property('ADBE Anchor Point').setValue([0, 0]);
+    tf.property('ADBE Position').setValue([0, 0]);
+    var grp = L.property('ADBE Root Vectors Group').addProperty('ADBE Vector Group');
+    grp.name = 'Link';
+    var path = grp.property('ADBE Vectors Group').addProperty('ADBE Vector Shape - Group');
+    var st = grp.property('ADBE Vectors Group').addProperty('ADBE Vector Graphic - Stroke');
+    st.property('ADBE Vector Stroke Color').setValue(lk.color);
+    st.property('ADBE Vector Stroke Width').setValue(lk.width);
+    try { st.property('ADBE Vector Stroke Line Cap').setValue(2); st.property('ADBE Vector Stroke Line Join').setValue(2); } catch (e) {}
+    var prop = path.property('ADBE Vector Shape');
+    var times = [], vals = [];
+    for (var f = 0; f < lk.frames.length; f++) {
+      var pts = lk.frames[f], sh = new Shape();
+      sh.vertices = pts; sh.closed = false;
+      times.push(t0 + lk.t[f]); vals.push(sh);
+    }
+    prop.setValuesAtTimes(times, vals);
+    L.moveToEnd();
+    n++;
+  }
+  app.endUndoGroup();
+  return { layers: n };
+};

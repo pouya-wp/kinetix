@@ -38,3 +38,31 @@ describe('exact-shape physics', () => {
     expect(r.frames[0].a[0]).toBeCloseTo(0, 5);
   });
 });
+
+describe('Newton-style worlds', () => {
+  const box = (w: number, h: number) => [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]];
+  it('a ball stays inside a container layer', () => {
+    const cont = { ...layer('Box', [[box(600, 400)]], 960, 540), index: 1, role: 'container' as const };
+    const ball = { ...layer('Ball', [[circle(30)]], 960, 450), index: 2 };
+    const open = { ...P, floor: false, walls: false, explode: 0, recipe: 'zerog', gravity: 1 };
+    const r = simulate([cont, ball], open, comp);
+    for (const fr of r.frames) {
+      expect(fr.y[1]).toBeLessThan(540 + 200);
+      expect(Math.abs(fr.x[1] - 960)).toBeLessThan(300);
+    }
+  });
+  it('a ball on a rope hangs instead of falling, and the rope is recorded', () => {
+    const ball = layer('Ball', [[circle(30)]], 960, 300);
+    const r = simulate([ball], { ...P, joints: [{ a: 0, b: null, type: 'rope', slack: 0.05 }] }, comp);
+    const last = r.frames[r.frames.length - 1];
+    expect(last.y[0]).toBeLessThan(500);
+    expect(r.links.length).toBe(1);
+    expect(r.links[0].pts.length).toBe(r.frames.length);
+    expect(r.links[0].pts[0].length).toBeGreaterThan(4);
+  });
+  it('a fixed layer never moves', () => {
+    const shelf = { ...layer('Shelf', [[box(400, 40)]], 960, 600), role: 'static' as const };
+    const r = simulate([shelf], P, comp);
+    expect(r.frames[r.frames.length - 1].y[0]).toBeCloseTo(600, 1);
+  });
+});

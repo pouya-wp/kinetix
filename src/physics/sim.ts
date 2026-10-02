@@ -12,15 +12,23 @@ export interface PhysLayer {
   index: number; name: string; cx: number; cy: number; w: number; h: number; rot: number; offX: number; offY: number; pos: number[]; kind: string;
   /** exact outlines (shape layers): frames → polygons → points, in layer space */
   outlines?: number[][][][]; anchor?: number[]; scale?: number[]; morphing?: boolean;
+  /** moves (default) · fixed in place · a box others stay inside · pinned at its anchor and swings */
+  role?: Role;
 }
+export type Role = 'dynamic' | 'static' | 'container' | 'pinned';
+/** A link between two layers (b = null: hangs from a fixed point above a). */
+export interface Joint { a: number; b: number | null; type: 'rope' | 'spring' | 'rod'; slack?: number }
 export type BodyShape = 'auto' | 'box' | 'circle';
 export interface PhysParams {
   recipe: string; gravity: number; bounce: number; friction: number; air: number; duration: number; strength: number; seed: number;
   floor: boolean; walls: boolean; ceiling: boolean; floorOffset: number; shape: BodyShape; spin: boolean;
+  joints?: Joint[];
 }
 /** per frame: layer anchor position (x, y) and layer rotation (radians) */
 export interface Frame { x: Float32Array; y: Float32Array; a: Float32Array }
-export interface SimResult { frames: Frame[]; hits: { t: number; index: number; speed: number; x: number }[]; fps: number }
+export interface SimResult { frames: Frame[]; hits: { t: number; index: number; speed: number; x: number }[]; fps: number;
+  /** per joint, per frame: the polyline of the rope / spring / rod (for preview and AE export) */
+  links: { joint: Joint; pts: number[][][] }[] }
 
 export const RECIPES: { id: string; label: string; sub: string; set?: Partial<PhysParams> }[] = [
   { id: 'fall', label: 'Fall & Stack', sub: 'drop and pile up', set: { gravity: 1, bounce: 0.35, friction: 0.4, air: 0.01 } },
@@ -103,15 +111,85 @@ export function simulate(L: PhysLayer[], p: PhysParams, comp: { w: number; h: nu
       b = circle ? Bodies.circle(l.cx, l.cy + dy, Math.max(4, Math.min(l.w, l.h) / 2), { ...opts, angle: th }) : Bodies.rectangle(l.cx, l.cy + dy, Math.max(4, l.w), Math.max(4, l.h), { ...opts, angle: th });
     }
     (b as any).kxIndex = i;
+    if (l.role === 'static') Body.setStatic(b, true);
     return { body: b, anchorRel: rot({ x: A.x - b.position.x, y: A.y - b.position.y }, -b.angle), aBase: b.angle - th, frame: 0, i };
   });
-  const bodies = () => kb.map((q) => q.body);
+  // a container is hollow: its outline becomes a ring of thin static walls, its own body leaves the world
+  const containers = new Set<number>();
+  L.forEach((l, i) => {
+    if (l.role !== 'container') return;
+    containers.add(i);
+    const A: V = { x: l.pos[0], y: l.pos[1] }, th = (l.rot * Math.PI) / 180;
+    let rings: V[][] = [];
+    if (l.outlines?.length) {
+      const an = l.anchor ?? [0, 0], sc = l.scale ?? [100, 100];
+      rings = l.outlines[0].map((poly) => poly.map((q) => { const r = rot({ x: (q[0] - an[0]) * sc[0] / 100, y: (q[1] - an[1]) * sc[1] / 100 }, th); return { x: A.x + r.x, y: A.y + r.y }; }));
+    } else {
+      const c = { x: l.cx, y: l.cy }, hw = l.w / 2, hh = l.h / 2;
+      rings = [[{ x: -hw, y: -hh }, { x: hw, y: -hh }, { x: hw, y: hh }, { x: -hw, y: hh }].map((q) => { const r = rot(q, th); return { x: c.x + r.x, y: c.y + r.y }; })];
+    }
+    const wall = 24;
+    for (const ring of rings) {
+      const pts = ring.length > 90 ? ring.filter((_, k) => k % Math.ceil(ring.length / 90) === 0) : ring;
+      const mid = pts.reduce((a, q) => ({ x: a.x + q.x / pts.length, y: a.y + q.y / pts.length }), { x: 0, y: 0 });
+      for (let k = 0; k < pts.length; k++) {
+        const p0 = pts[k], p1 = pts[(k + 1) % pts.length];
+        const len = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        if (len < 1) continue;
+        const ang = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+        const ex = (p0.x + p1.x) / 2, ey = (p0.y + p1.y) / 2;
+        // the wall sits just outside the outline: its inner face lies on the edge
+        let nx = Math.sin(ang), ny = -Math.cos(ang);
+        if (nx * (ex - mid.x) + ny * (ey - mid.y) < 0) { nx = -nx; ny = -ny; }
+        statics.push(Bodies.rectangle(ex + nx * wall / 2, ey + ny * wall / 2, len + wall, wall, { isStatic: true, angle: ang, friction: p.friction, restitution: p.bounce }));
+      }
+    }
+  });
+  const anchorOfInit = (q: KBody): V => { const r = rot(q.anchorRel, q.body.angle); return { x: q.body.position.x + r.x, y: q.body.position.y + r.y }; };
+  const bodies = () => kb.filter((q) => !containers.has(q.i)).map((q) => q.body);
   Composite.add(engine.world, [...statics, ...bodies()]);
   const cx = W / 2, cy = H / 2;
   const k = p.strength;
   const constraints: Matter.Constraint[] = [];
   const addC = (c: Matter.Constraint) => { constraints.push(c); Composite.add(engine.world, c); };
   const B = bodies();
+  L.forEach((l, i) => {
+    if (l.role !== 'pinned') return;
+    const q = kb[i];
+    const A = anchorOfInit(q);
+    addC(Constraint.create({ pointA: { x: A.x, y: A.y }, bodyB: q.body, pointB: { x: A.x - q.body.position.x, y: A.y - q.body.position.y }, stiffness: 1, length: 0 }));
+  });
+  // links: rope = a slack chain of tiny beads (only pulls), spring = soft, rod = rigid
+  const links: { joint: Joint; beads: Matter.Body[]; ends: () => V[] }[] = [];
+  for (const j of p.joints ?? []) {
+    const qa = kb[j.a], qb = j.b === null ? null : kb[j.b];
+    if (!qa || (j.b !== null && !qb)) continue;
+    const pa = { ...qa.body.position };
+    const pb = qb ? { ...qb.body.position } : { x: pa.x, y: pa.y - 380 };
+    const dist = Math.max(10, Math.hypot(pb.x - pa.x, pb.y - pa.y));
+    if (j.type === 'rope') {
+      const len = dist * (1 + (j.slack ?? 0.08));
+      const n = Math.max(6, Math.min(26, Math.round(len / 28)));
+      const seg = len / n;
+      const beads: Matter.Body[] = [];
+      for (let k = 1; k < n; k++) {
+        const u = k / n;
+        const bd = Bodies.circle(pb.x + (pa.x - pb.x) * u, pb.y + (pa.y - pb.y) * u, 4, { collisionFilter: { group: -7 }, frictionAir: 0.02, density: 0.0006 });
+        beads.push(bd);
+      }
+      Composite.add(engine.world, beads);
+      const chain: (Matter.Body | V)[] = [qb ? qb.body : pb, ...beads, qa.body];
+      for (let k = 0; k < chain.length - 1; k++) {
+        const x = chain[k], y = chain[k + 1];
+        const isB = (o: any): o is Matter.Body => !!o && 'position' in o && 'mass' in o;
+        addC(Constraint.create({ ...(isB(x) ? { bodyA: x } : { pointA: x as V }), ...(isB(y) ? { bodyB: y } : { pointB: y as V }), length: seg, stiffness: 0.95, damping: 0.05 }));
+      }
+      links.push({ joint: j, beads, ends: () => [qb ? qb.body.position : pb, qa.body.position] });
+    } else {
+      addC(Constraint.create({ bodyA: qa.body, ...(qb ? { bodyB: qb.body } : { pointB: pb }), length: dist, stiffness: j.type === 'rod' ? 1 : 0.012, damping: j.type === 'rod' ? 0 : 0.03 }));
+      links.push({ joint: j, beads: [], ends: () => [qb ? qb.body.position : pb, qa.body.position] });
+    }
+  }
   if (p.recipe === 'explode' || p.recipe === 'scatter') {
     B.forEach((b) => {
       const dx = b.position.x - cx, dy = b.position.y - cy, d = Math.hypot(dx, dy) || 1;
@@ -184,15 +262,22 @@ export function simulate(L: PhysLayer[], p: PhysParams, comp: { w: number; h: nu
   const fps = comp.fps, nF = Math.ceil(p.duration * fps) + 1, SUB = 4;
   const dtMs = 1000 / fps / SUB;
   const frames: Frame[] = [];
+  const linkPts = new Map<(typeof links)[number], number[][][]>();
   const noiseSeed = rand() * 100;
   for (let f = 0; f < nF; f++) {
     for (const q of kb) if (L[q.i].morphing && useExact(L[q.i])) rebuild(q, f);
     const an = kb.map(anchorOf);
+    for (const lk of links) {
+      const [e0, e1] = lk.ends();
+      const pts = [[e0.x, e0.y], ...lk.beads.map((b) => [b.position.x, b.position.y]), [e1.x, e1.y]];
+      (linkPts.get(lk) ?? linkPts.set(lk, []).get(lk)!).push(pts);
+    }
     frames.push({ x: Float32Array.from(an, (v) => v.x), y: Float32Array.from(an, (v) => v.y), a: Float32Array.from(kb, angleOf) });
     for (let s = 0; s < SUB; s++) {
       time = (f + s / SUB) / fps;
       kb.forEach((q, i) => {
         const b = q.body;
+        if (b.isStatic || containers.has(i)) return;
         const dx = cx - b.position.x, dy = cy - b.position.y, d = Math.hypot(dx, dy) || 1;
         const m = b.mass;
         switch (p.recipe) {
@@ -206,7 +291,7 @@ export function simulate(L: PhysLayer[], p: PhysParams, comp: { w: number; h: nu
       Engine.update(engine, dtMs);
     }
   }
-  return { frames, hits, fps };
+  return { frames, hits, fps, links: links.map((lk) => ({ joint: lk.joint, pts: linkPts.get(lk) ?? [] })) };
 }
 
 /** World outline of a layer for the preview (exact shapes when available). */
