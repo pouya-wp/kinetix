@@ -18,6 +18,10 @@ export function registerMock(name: string, fn: MockFn) { mocks[name] = fn; }
 
 export class HostError extends Error {}
 
+// set by core/log (kept as a hook to avoid an import cycle)
+export let onHostError: (name: string, msg: string) => void = () => {};
+export function setHostErrorHook(fn: (name: string, msg: string) => void) { onHostError = fn; }
+
 /** Call a function exported by host/kinetix.jsx (KX.<name>). */
 export function call<T = any>(name: string, ...args: any[]): Promise<T> {
   if (!inAE) {
@@ -30,11 +34,11 @@ export function call<T = any>(name: string, ...args: any[]): Promise<T> {
   const script = `kx_call(${JSON.stringify(name)}, ${payload})`;
   return new Promise((res, rej) => {
     window.__adobe_cep__!.evalScript(script, (out: string) => {
-      if (out === 'EvalScript error.' || out == null) return rej(new HostError(`Host call ${name} failed (EvalScript error). Is host/kinetix.jsx loaded?`));
+      if (out === 'EvalScript error.' || out == null) { onHostError(name, 'EvalScript error'); return rej(new HostError(`Host call ${name} failed (EvalScript error). Is host/kinetix.jsx loaded?`)); }
       let parsed: any;
       try { parsed = JSON.parse(out); } catch { return rej(new HostError(`Bad host reply for ${name}: ${String(out).slice(0, 200)}`)); }
       if (parsed.ok) res(parsed.r as T);
-      else rej(new HostError(parsed.err || 'Unknown host error'));
+      else { onHostError(name, parsed.err); rej(new HostError(parsed.err || 'Unknown host error')); }
     });
   });
 }

@@ -48,7 +48,7 @@ function kx_call(name, json) {
     var r = fn.apply(null, args);
     return KXJSON.stringify({ ok: true, r: r === undefined ? null : r });
   } catch (e) {
-    try { app.endUndoGroup(); } catch (e2) {}
+    try { app.endUndoGroup(); KX._liveOpen = false; } catch (e2) {}
     return KXJSON.stringify({ ok: false, err: (e && e.message ? e.message : String(e)) + (e && e.line ? ' (line ' + e.line + ')' : '') });
   }
 }
@@ -2091,15 +2091,19 @@ KX.camLive = function (p) {
   var comp = KX._comp(null, false);
   var rig = KX._rig(comp);
   if (!rig) throw new Error('Add a camera first.');
-  app.beginUndoGroup('Kinetix Camera');
+  // during a drag the group opened by camLiveBegin stays open, so the whole drag is one undo step
+  if (!KX._liveOpen) app.beginUndoGroup('Kinetix Camera');
   for (var k in p) {
     if (!p.hasOwnProperty(k)) continue;
     var pr = KX._rigProp(rig, k === 'position' ? 'rigX' : k);
     if (pr.numKeys > 0) pr.setValueAtTime(comp.time, p[k]); else pr.setValue(p[k]);
   }
-  app.endUndoGroup();
+  if (!KX._liveOpen) app.endUndoGroup();
   return true;
 };
+KX._liveOpen = false;
+KX.camLiveBegin = function () { if (!KX._liveOpen) { app.beginUndoGroup('Kinetix Camera Drag'); KX._liveOpen = true; } return true; };
+KX.camLiveEnd = function () { if (KX._liveOpen) { KX._liveOpen = false; app.endUndoGroup(); } return true; };
 
 /** Key the whole pose at the playhead (all rig controls), with an ease on the new keys. */
 KX.camKeyPose = function (p) {
@@ -2259,4 +2263,222 @@ KX.sfxSample = function (p) {
     out.push(rec);
   }
   return { fps: fps, t0: t0, end: t1, comp: { w: comp.width, h: comp.height }, layers: out };
+};
+
+// --------- Bake: turn Kinetix expressions into plain keyframes (faster renders, portable projects) ---------
+KX._sameVal = function (a, b) {
+  if (a instanceof Array) { for (var i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 0.001) return false; return true; }
+  return Math.abs(a - b) <= 0.001;
+};
+KX._bakeProp = function (pr, t0, t1, fps) {
+  var times = [], vals = [];
+  var n = Math.max(1, Math.round((t1 - t0) * fps));
+  for (var f = 0; f <= n; f++) { var t = t0 + f / fps; times.push(t); vals.push(pr.valueAtTime(t, false)); }
+  // drop frames inside flat runs, keep both ends of every change
+  var kt = [], kv = [];
+  for (var i = 0; i < times.length; i++) {
+    var flatPrev = i > 0 && KX._sameVal(vals[i], vals[i - 1]);
+    var flatNext = i < times.length - 1 && KX._sameVal(vals[i], vals[i + 1]);
+    if (!(flatPrev && flatNext)) { kt.push(times[i]); kv.push(vals[i]); }
+  }
+  pr.expression = '';
+  while (pr.numKeys > 0) pr.removeKey(1);
+  if (kt.length === 1 || (kt.length === 2 && KX._sameVal(kv[0], kv[1]))) { pr.setValue(kv[0]); return 0; }
+  pr.setValuesAtTimes(kt, kv);
+  for (var k = 1; k <= pr.numKeys; k++) { try { pr.setInterpolationTypeAtKey(k, KeyframeInterpolationType.LINEAR); } catch (e) {} }
+  return kt.length;
+};
+// only motion expressions; the camera rig, focus and depth links must stay live
+KX._BAKE_TAGS = ['KX-ANIM', 'KX-LOOP', 'KX-WIGGLE', 'KX-EXPR', 'KX-EASE', 'KX-SHAKE'];
+KX._bakeable = function (x) { for (var i = 0; i < KX._BAKE_TAGS.length; i++) if (x.indexOf(KX._BAKE_TAGS[i]) >= 0) return true; return false; };
+KX.bakeKX = function (p) {
+  var comp = KX._comp(null, false);
+  var layers = [];
+  if (p && p.all) { for (var i = 1; i <= comp.numLayers; i++) layers.push(comp.layer(i)); } else layers = comp.selectedLayers;
+  if (!layers.length) throw new Error('Select the layers to bake (or choose All layers).');
+  var fps = comp.frameRate, props = 0, keys = 0, skipped = 0;
+  app.beginUndoGroup('Kinetix Bake');
+  for (var l = 0; l < layers.length; l++) {
+    var L = layers[l];
+    var t0 = Math.max(0, L.inPoint), t1 = Math.min(comp.duration, L.outPoint);
+    var found = [];
+    var walk = function (g) {
+      for (var j = 1; j <= g.numProperties; j++) {
+        var q = g.property(j);
+        if (q.propertyType === PropertyType.PROPERTY) {
+          try { if (q.canSetExpression && q.expressionEnabled && KX._bakeable(q.expression)) found.push(q); } catch (e) {}
+        } else walk(q);
+      }
+    };
+    walk(L);
+    for (var k = 0; k < found.length; k++) {
+      var q2 = found[k];
+      // per-character text selectors cannot be represented as keyframes
+      if (q2.matchName === 'ADBE Text Expressible Amount' || q2.propertyValueType === PropertyValueType.NO_VALUE || q2.propertyValueType === PropertyValueType.CUSTOM_VALUE) { skipped++; continue; }
+      try { keys += KX._bakeProp(q2, t0, t1, fps); props++; } catch (e2) { skipped++; }
+    }
+  }
+  app.endUndoGroup();
+  return { props: props, keys: keys, skipped: skipped };
+};
+
+// --------- Auto-SFX v3: screen-space sampling of everything that moves ---------
+// A temporary null carries one expression control per tracked layer. The expressions use
+// toComp(), so parenting at any depth, 3D layers, the camera, scale and precomp contents
+// are all measured exactly as they appear on screen.
+KX._sfxExpr = function (outer, inner) {
+  var s = 'var P=thisComp.layer(' + outer + ');';
+  if (inner) {
+    s += 'var I=P.source.layer(' + inner + ');var tt=(P.timeRemapEnabled?P.timeRemap:(time-P.startTime)*100/P.stretch);';
+    s += 'var vis=(time>=P.inPoint&&time<P.outPoint&&tt>=I.inPoint&&tt<I.outPoint)?1:0;';
+    s += 'var r=I.sourceRectAtTime(tt,false);';
+    s += 'function C(q){return P.toComp(I.toComp(q,tt));}';
+    s += 'var op=vis*I.transform.opacity.valueAtTime(tt)*P.transform.opacity/100;';
+  } else {
+    s += 'var vis=(time>=P.inPoint&&time<P.outPoint)?1:0;var r=P.sourceRectAtTime(time,false);';
+    s += 'function C(q){return P.toComp(q);}';
+    s += 'var op=vis*P.transform.opacity;';
+  }
+  s += 'var a=C([r.left,r.top]),b=C([r.left+r.width,r.top]),c=C([r.left+r.width,r.top+r.height]),d=C([r.left,r.top+r.height]);';
+  s += 'var cx=(a[0]+b[0]+c[0]+d[0])/4,cy=(a[1]+b[1]+c[1]+d[1])/4;';
+  s += 'var w=length(a,b),h=length(b,c);';
+  s += 'var ang=Math.atan2(b[1]-a[1],b[0]-a[0])*180/Math.PI;';
+  return { p: s + '[cx,cy,Math.sqrt(Math.max(0,w*h))];', q: s + '[ang,op,0];' };
+};
+
+KX._kindOf = function (L) {
+  if (L instanceof TextLayer) return 'text';
+  if (L instanceof ShapeLayer) return 'shape';
+  if (L.source && L.source instanceof CompItem) return 'precomp';
+  if (L.nullLayer) return 'null';
+  try { if (L.source && L.source.mainSource instanceof SolidSource) return 'solid'; } catch (e) {}
+  return 'footage';
+};
+KX._slider = function (L, name) {
+  try { var e = L.property('ADBE Effect Parade').property(name); if (e) return e.property(1).value; } catch (x) {}
+  return null;
+};
+KX._inoutInfo = function (L, off) {
+  var a = KX._slider(L, 'KX In Duration'), b = KX._slider(L, 'KX Out Duration');
+  if (a === null && b === null) return null;
+  return { inT: L.inPoint + off, inDur: a, outT: L.outPoint + off, outDur: b };
+};
+KX._typeInfo = function (L, off) {
+  var d = KX._slider(L, 'KX Type In Duration');
+  if (d === null) return null;
+  var txt = '';
+  try { txt = String(L.property('ADBE Text Properties').property('ADBE Text Document').value.text); } catch (e) {}
+  var hasIn = false, hasOut = false, basedOn = 1;
+  try {
+    var an = L.property('ADBE Text Properties').property('ADBE Text Animators');
+    for (var i = 1; i <= an.numProperties; i++) {
+      var nm = an.property(i).name;
+      if (nm === 'KX Type In') hasIn = true;
+      if (nm === 'KX Type Out') hasOut = true;
+      if (nm === 'KX Type In' || nm === 'KX Type Out') {
+        var sels = an.property(i).property('ADBE Text Selectors');
+        for (var q = 1; q <= sels.numProperties; q++) if (sels.property(q).matchName === 'ADBE Text Expressible Selector') basedOn = sels.property(q).property('ADBE Text Range Type2').value;
+      }
+    }
+  } catch (e2) {}
+  return { text: txt, basedOn: basedOn, hasIn: hasIn, hasOut: hasOut, inDur: d, outDur: KX._slider(L, 'KX Type Out Duration'), stagger: KX._slider(L, 'KX Type Stagger'), fit: KX._slider(L, 'KX Type Auto Fit'), inT: L.inPoint + off, outT: L.outPoint + off };
+};
+
+KX.sfxSample3 = function (p) {
+  var comp = KX._comp(null, false);
+  var fps = comp.frameRate, step = fps > 31 ? Math.round(fps / 30) : 1;
+  var t0 = p.workArea ? comp.workAreaStart : 0;
+  var t1 = p.workArea ? comp.workAreaStart + comp.workAreaDuration : comp.duration;
+  var n = Math.floor((t1 - t0) * fps / step) + 1;
+  if (n > 9000) n = 9000;
+  var keep = [];
+  for (var s0 = 0; s0 < comp.selectedLayers.length; s0++) keep.push(comp.selectedLayers[s0]);
+  var src = [];
+  if (p.scope === 'selected') src = keep.slice(0);
+  else for (var i = 1; i <= comp.numLayers; i++) src.push(comp.layer(i));
+  var targets = [];
+  for (var s = 0; s < src.length; s++) {
+    var L = src[s];
+    if (L instanceof CameraLayer || L instanceof LightLayer) continue;
+    if (L.comment === 'kx-rig') continue;
+    if (!L.hasVideo || !L.enabled || L.guideLayer || L.adjustmentLayer) continue;
+    if (L.inPoint >= t1 || L.outPoint <= t0) continue;
+    targets.push({ L: L, inner: 0, name: L.name, kind: KX._kindOf(L) });
+    // look inside precomps (one level) so their content is scored too
+    if (L.source && L.source instanceof CompItem && p.precomps !== false) {
+      var sc = L.source, added = 0;
+      for (var j = 1; j <= sc.numLayers && added < 24; j++) {
+        var IL = sc.layer(j);
+        if (IL instanceof CameraLayer || IL instanceof LightLayer || !IL.hasVideo || !IL.enabled || IL.guideLayer || IL.adjustmentLayer) continue;
+        targets.push({ L: L, inner: j, name: L.name + ' > ' + IL.name, kind: KX._kindOf(IL), IL: IL });
+        added++;
+      }
+    }
+  }
+  if (targets.length > 120) targets.length = 120;
+  var out = [];
+  app.beginUndoGroup('Kinetix Analyze');
+  var helper = comp.layers.addNull();
+  helper.name = 'KX SFX probe';
+  try {
+    var fx = helper.property('ADBE Effect Parade');
+    for (var k = 0; k < targets.length; k++) {
+      var ex = KX._sfxExpr(targets[k].L.index, targets[k].inner);
+      fx.addProperty('ADBE Point3D Control').property(1).expression = ex.p;
+      fx.addProperty('ADBE Point3D Control').property(1).expression = ex.q;
+    }
+    for (var k3 = 0; k3 < targets.length; k3++) {
+      var T2 = targets[k3], X = [], Y = [], S = [], R = [], O = [], bad = false;
+      var cp = fx.property(k3 * 2 + 1).property(1), cq = fx.property(k3 * 2 + 2).property(1);
+      for (var f = 0; f < n; f++) {
+        var t = t0 + f * step / fps, v, w;
+        try { v = cp.valueAtTime(t, false); w = cq.valueAtTime(t, false); } catch (eE) { bad = true; break; }
+        X.push(Math.round(v[0] * 10) / 10); Y.push(Math.round(v[1] * 10) / 10); S.push(Math.round(v[2] * 10) / 10);
+        R.push(Math.round(w[0] * 10) / 10); O.push(Math.round(w[1]));
+      }
+      if (bad) continue;
+      var LL = T2.inner ? T2.IL : T2.L;
+      var rec = { name: T2.name, kind: T2.kind, inner: !!T2.inner, inPoint: T2.L.inPoint, outPoint: T2.L.outPoint, x: X, y: Y, s: S, r: R, o: O, markers: [], textKeys: [], pathKeys: [], type: null, inout: null };
+      var tOff = T2.inner ? T2.L.startTime : 0;
+      try { var mk = LL.property('ADBE Marker'); for (var m = 1; m <= mk.numKeys; m++) rec.markers.push({ t: mk.keyTime(m) + tOff, dur: mk.keyValue(m).duration, comment: String(mk.keyValue(m).comment) }); } catch (eM) {}
+      if (LL instanceof TextLayer) {
+        var st = LL.property('ADBE Text Properties').property('ADBE Text Document');
+        for (var q = 1; q <= st.numKeys; q++) rec.textKeys.push(st.keyTime(q) + tOff);
+        rec.type = KX._typeInfo(LL, tOff);
+      }
+      if (LL instanceof ShapeLayer) { var pk = KX._pathKeyTimes(LL); for (var z = 0; z < pk.length; z++) rec.pathKeys.push(pk[z] + tOff); }
+      rec.inout = KX._inoutInfo(LL, tOff);
+      out.push(rec);
+    }
+  } finally {
+    try { helper.remove(); } catch (eH) {}
+    for (var i2 = 1; i2 <= comp.numLayers; i2++) comp.layer(i2).selected = false;
+    for (var i3 = 0; i3 < keep.length; i3++) { try { keep[i3].selected = true; } catch (eS) {} }
+    app.endUndoGroup();
+  }
+  return { fps: fps / step, t0: t0, end: t1, comp: { w: comp.width, h: comp.height }, layers: out };
+};
+
+/** Place one mixed track (or several stems) at a time, replacing an earlier Auto-SFX mix. */
+KX.sfxPlaceMix = function (p) {
+  var comp = KX._comp(null, false);
+  app.beginUndoGroup('Kinetix Auto-SFX');
+  if (p.replace) {
+    for (var i = comp.numLayers; i >= 1; i--) { var L0 = comp.layer(i); if (L0.comment === 'kx-sfx-mix') L0.remove(); }
+  }
+  var folder = KX._projFolder('Kinetix SFX'), n = 0;
+  for (var k = 0; k < p.files.length; k++) {
+    var F = p.files[k];
+    var item = app.project.importFile(new ImportOptions(new File(F.path)));
+    item.parentFolder = folder;
+    var L = comp.layers.add(item);
+    L.startTime = F.t;
+    L.name = KX._uniqueName(comp, F.name);
+    L.comment = 'kx-sfx-mix';
+    L.label = 4;
+    L.moveToEnd();
+    n++;
+  }
+  app.endUndoGroup();
+  return { layers: n };
 };

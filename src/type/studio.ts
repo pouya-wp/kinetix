@@ -89,12 +89,12 @@ export class TypeStudio implements Studio {
     this.renderGrid();
     // keep the In/Out/Loop summary up to date
     const kv = this.el.querySelector('.kv')!;
-    setInterval(() => {
+    onRefresh(kv as HTMLElement, () => {
       const b = kv.querySelectorAll('b');
       b[0].textContent = MOTIONS.find((x) => x.id === c.inId)?.label ?? 'None';
       b[1].textContent = MOTIONS.find((x) => x.id === c.outId)?.label ?? 'None';
       b[2].textContent = LOOPS.find((x) => x.id === c.loopId)?.label ?? 'None';
-    }, 250);
+    });
     registerCommands([
       ...MOTIONS.map((x) => ({ id: 'type.in.' + x.id, label: 'Type In: ' + x.label, group: 'Type', run: () => { c.inId = x.id; this.apply(); } })),
       ...MOTIONS.map((x) => ({ id: 'type.out.' + x.id, label: 'Type Out: ' + x.label, group: 'Type', run: () => { c.outId = x.id; this.apply(); } })),
@@ -111,7 +111,7 @@ export class TypeStudio implements Studio {
     const save = () => { try { localStorage.setItem(LS, JSON.stringify(c)); } catch { /* */ } };
     if (c.phase === 'loop') {
       const t = Tiles([{ id: '__none', label: 'None' }, ...LOOPS.map((x) => ({ id: x.id, label: x.label }))], {
-        onPick: (x) => { c.loopId = x.id === '__none' ? null : x.id; save(); t.refresh(); }, isOn: (x) => (c.loopId ?? '__none') === x.id, min: 130,
+        onPick: (x) => { c.loopId = x.id === '__none' ? null : x.id; save(); t.refresh(); refreshAll(); }, isOn: (x) => (c.loopId ?? '__none') === x.id, min: 130,
       });
       this.grid.appendChild(Group('Loops & emphasis', [t.el]));
       return;

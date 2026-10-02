@@ -46,6 +46,7 @@ registerMock('easeApplyKeys', () => ({ keys: 4, props: 2 }));
 registerMock('exprApply', () => ({ props: 2 }));
 registerMock('animApply', (r: any) => { console.log('[mock] animApply', r); return { layers: 2, warnings: [] }; });
 registerMock('animClear', () => ({ layers: 2 }));
+registerMock('bakeKX', () => ({ props: 3, keys: 42, skipped: 0 }));
 registerMock('typeApply', (r: any) => { console.log('[mock] typeApply', r); return { layers: 1 }; });
 registerMock('typeClear', () => ({ layers: 1 }));
 registerMock('physScene', () => ({ comp: { w: 1920, h: 1080, fps: 30, time: 0 }, layers: [] }));
@@ -76,3 +77,27 @@ registerMock('sfxSample', () => {
     { name: 'Title', index: 3, inPoint: 0, outPoint: 4, size: [800, 120], op, textKeys: [2.4, 2.5, 2.6], pathKeys: [], markers: [] },
   ] };
 });
+// Auto-SFX v3 demo scene: a bouncing ball, three cards popping in, a slide-in panel, typed title, fade-out.
+registerMock('sfxSample3', () => {
+  const fps = 30, n = 165, T = (f: number) => f / fps;
+  const blank = () => ({ x: [] as number[], y: [] as number[], s: [] as number[], r: [] as number[], o: [] as number[], markers: [], textKeys: [], pathKeys: [], type: null as any, inout: null, inner: false, inPoint: 0, outPoint: 5.5 });
+  const ball = { ...blank(), name: 'Ball', kind: 'shape' };
+  const cards = [0, 1, 2].map((i) => ({ ...blank(), name: 'Card ' + (i + 1), kind: 'solid' }));
+  const panel = { ...blank(), name: 'Panel', kind: 'shape' };
+  const title = { ...blank(), name: 'Title', kind: 'text', type: { text: 'Hello Kinetix', basedOn: 1, hasIn: true, hasOut: false, inDur: 0.25, outDur: null, stagger: 0.05, fit: 0, inT: 3.3, outT: 5.5 } };
+  const back = (p: number) => { const c = 2.2; return 1 + (c + 1) * Math.pow(p - 1, 3) + c * Math.pow(p - 1, 2); };
+  for (let f = 0; f < n; f++) {
+    const t = T(f);
+    // ball: fall, then decaying bounces
+    let y: number;
+    if (t < 0.6) y = 150 + 750 * (t / 0.6) ** 2;
+    else { const k = t - 0.6, per = [0.5, 0.35, 0.25], hts = [300, 140, 60]; let acc = 0, i = 0; while (i < 3 && k > acc + per[i]) { acc += per[i]; i++; } if (i >= 3) y = 900; else { const u = (k - acc) / per[i]; y = 900 - hts[i] * 4 * u * (1 - u); } }
+    ball.x.push(300 + Math.min(t, 1.8) * 120); ball.y.push(y); ball.s.push(110); ball.r.push(0); ball.o.push(100);
+    cards.forEach((c, i) => { const p = Math.max(0, Math.min(1, (t - 1.9 - i * 0.12) / 0.35)); c.x.push(700 + i * 300); c.y.push(300); c.s.push(p <= 0 ? 0 : 260 * back(p)); c.r.push(0); c.o.push(p > 0 ? 100 : 0); });
+    const q = Math.max(0, Math.min(1, (t - 2.7) / 0.45)), e = 1 - Math.pow(1 - q, 4);
+    panel.x.push(-400 + e * 1360); panel.y.push(760); panel.s.push(500); panel.r.push(0); panel.o.push(t > 4.8 ? Math.max(0, 100 - (t - 4.8) * 300) : 100);
+    title.x.push(960); title.y.push(160); title.s.push(t >= 3.3 ? 400 : 0); title.r.push(0); title.o.push(t >= 3.3 ? 100 : 0);
+  }
+  return { fps, t0: 0, end: 5.5, comp: { w: 1920, h: 1080 }, layers: [ball, ...cards, panel, title] };
+});
+registerMock('sfxPlaceMix', (p: any) => ({ layers: p.files.length }));

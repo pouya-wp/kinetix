@@ -38,6 +38,9 @@ export class CameraStudio implements Studio {
   private poll = 0;
   private live: Record<string, any> = {};
   private sending = false;
+  private endPending = false;
+  private hover = false;
+  private hoverBound = false;
   private status: HTMLElement;
   private keysBar: HTMLElement;
   private layerBox: HTMLElement;
@@ -86,11 +89,11 @@ export class CameraStudio implements Studio {
         this.strip('Dolly', (dy, st) => ({ distance: Math.max(40, st.distance * Math.exp(dy * 0.005)) })),
       ),
       h('div', { class: 'row' },
-        Slider({ label: 'Roll °', min: -45, max: 45, step: 0.5, get: () => this.pose?.values?.roll ?? 0, set: (v, f) => this.send({ roll: v }, f) }),
-        Slider({ label: 'Lens mm', min: 10, max: 200, step: 1, get: () => this.pose?.values?.focal ?? 50, set: (v, f) => this.send({ focal: v }, f) })),
+        Slider({ label: 'Roll °', min: -45, max: 45, step: 0.5, get: () => this.pose?.values?.roll ?? 0, begin: () => this.beginDrag(), set: (v, f) => this.send({ roll: v }, f) }),
+        Slider({ label: 'Lens mm', min: 10, max: 200, step: 1, get: () => this.pose?.values?.focal ?? 50, begin: () => this.beginDrag(), set: (v, f) => this.send({ focal: v }, f) })),
       h('div', { class: 'row' },
-        Slider({ label: 'Pan (look left/right) °', min: -60, max: 60, step: 0.5, get: () => this.pose?.values?.pan ?? 0, set: (v, f) => this.send({ pan: v }, f) }),
-        Slider({ label: 'Look up/down °', min: -40, max: 40, step: 0.5, get: () => this.pose?.values?.look ?? 0, set: (v, f) => this.send({ look: v }, f) })),
+        Slider({ label: 'Pan (look left/right) °', min: -60, max: 60, step: 0.5, get: () => this.pose?.values?.pan ?? 0, begin: () => this.beginDrag(), set: (v, f) => this.send({ pan: v }, f) }),
+        Slider({ label: 'Look up/down °', min: -40, max: 40, step: 0.5, get: () => this.pose?.values?.look ?? 0, begin: () => this.beginDrag(), set: (v, f) => this.send({ look: v }, f) })),
       h('div', { class: 'keyrow' },
         Btn('◆ Key pose', () => this.act('camKeyPose', { bezier: easeById(c.ease).bezier }, 'Pose keyed at the playhead'), { variant: 'primary' }),
         Btn('◀', () => this.jump(-1), { title: 'Previous key' }),
@@ -166,8 +169,15 @@ export class CameraStudio implements Studio {
     this.active = true;
     this.refresh();
     clearInterval(this.poll);
-    // follow the AE playhead / undo while the tab is open
-    this.poll = window.setInterval(() => { if (this.active && !this.sending && !document.hidden) this.refreshPose(); }, 1200);
+    // Follow the AE playhead / undo only while the pointer is over the panel: a script call
+    // while AE plays a RAM preview would stop the preview.
+    this.poll = window.setInterval(() => { if (this.active && this.hover && !this.sending && !document.hidden) this.refreshPose(); }, 900);
+    if (!this.hoverBound) {
+      this.hoverBound = true;
+      document.addEventListener('mouseenter', () => { this.hover = true; if (this.active) this.refreshPose(); });
+      document.addEventListener('mouseleave', () => { this.hover = false; });
+      window.addEventListener('focus', () => { if (this.active) this.refreshPose(); });
+    }
   }
   deactivate() { this.active = false; clearInterval(this.poll); }
 
@@ -204,19 +214,27 @@ export class CameraStudio implements Studio {
     Object.assign(this.live, v);
     this.updateReadouts();
     this.drawFromPose();
+    if (final) this.endPending = true;
     const flush = async () => {
       if (this.sending) return;
       const payload = this.live;
       this.live = {};
-      if (!Object.keys(payload).length) return;
-      this.sending = true;
-      try { await call('camLive', payload); } catch (e: any) { toast(e.message, 'err'); }
-      this.sending = false;
-      if (Object.keys(this.live).length) flush();
-      else if (final) this.refreshPose();
+      if (Object.keys(payload).length) {
+        this.sending = true;
+        try { await call('camLive', payload); } catch (e: any) { toast(e.message, 'err'); }
+        this.sending = false;
+      }
+      if (Object.keys(this.live).length) return flush();
+      if (this.endPending) {
+        this.endPending = false;
+        try { await call('camLiveEnd'); } catch { /* group already closed */ }
+        this.refreshPose();
+      }
     };
     flush();
   }
+  /** One AE undo step per drag. */
+  private beginDrag() { this.endPending = false; call('camLiveBegin').catch(() => {}); }
 
   // ───────── pads ─────────
   private pad(label: string, sub: string, map: (dx: number, dy: number, st: NonNullable<Pose['values']>) => Record<string, any>) {
@@ -231,6 +249,7 @@ export class CameraStudio implements Studio {
       st = structuredClone(this.pose.values);
       x0 = e.clientX; y0 = e.clientY;
       el.classList.add('on');
+      this.beginDrag();
     });
     el.addEventListener('pointermove', (e) => {
       if (!st) return;
@@ -256,7 +275,7 @@ export class CameraStudio implements Studio {
     this.readouts[label] = read;
     const el = h('div', { class: 'strip' }, knob, h('div', { class: 'pad-label' }, label), h('div', { class: 'pad-sub' }, '↑ closer · ↓ farther'), read);
     let st: NonNullable<Pose['values']> | null = null, y0 = 0;
-    el.addEventListener('pointerdown', (e) => { if (!this.pose?.values) { toast('Add a camera first', 'info'); return; } el.setPointerCapture(e.pointerId); st = structuredClone(this.pose.values); y0 = e.clientY; el.classList.add('on'); });
+    el.addEventListener('pointerdown', (e) => { if (!this.pose?.values) { toast('Add a camera first', 'info'); return; } el.setPointerCapture(e.pointerId); st = structuredClone(this.pose.values); y0 = e.clientY; el.classList.add('on'); this.beginDrag(); });
     el.addEventListener('pointermove', (e) => { if (!st) return; const dy = e.clientY - y0; knob.style.transform = `translateY(${Math.max(-60, Math.min(60, dy))}px)`; this.send(map(dy, st)); });
     const end = (e: PointerEvent) => { if (!st) return; this.send(map(e.clientY - y0, st), true); st = null; knob.style.transform = ''; el.classList.remove('on'); };
     el.addEventListener('pointerup', end);

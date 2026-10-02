@@ -5,7 +5,8 @@ import './styles/app.css';
 import { h, svg, I, toast } from './ui/kit';
 import { store, loadPersisted } from './core/state';
 import { clock } from './core/clock';
-import { inAE } from './core/ae-bridge';
+import { inAE, setHostErrorHook, nodeRequire } from './core/ae-bridge';
+import { log, logText, logPath, installGlobalHandlers } from './core/log';
 import { syncCompFromAE } from './core/common-ui';
 import { openPalette, registerCommands } from './core/commands';
 import './core/mocks';
@@ -48,6 +49,16 @@ const SECTIONS: SectionDef[] = [
 ];
 
 function boot() {
+  installGlobalHandlers();
+  setHostErrorHook((name, msg) => log('error', `host ${name}: ${msg}`));
+  registerCommands([
+    { id: 'diag.copy', label: 'Copy diagnostics log', group: 'Tools', run: () => { navigator.clipboard?.writeText(logText()).then(() => toast('Log copied'), () => toast('Clipboard blocked', 'err')); } },
+    { id: 'diag.open', label: 'Show log file', group: 'Tools', run: () => {
+      const f = logPath();
+      if (!f) { toast('Log file is only written inside After Effects', 'info'); return; }
+      try { const win = navigator.platform.startsWith("Win"); nodeRequire()!("child_process").exec(win ? `explorer /select,"${f}"` : `open -R "${f}"`); } catch { toast(f, 'info', 8000); }
+    } },
+  ]);
   loadPersisted();
   clock.fps = store.state.comp.fps;
 

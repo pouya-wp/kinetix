@@ -1,4 +1,5 @@
 import { h, Section, Slider, Seg, Btn, Field, Select, Toggle, toast, refreshAll, onRefresh, clear } from '../ui/kit';
+import { bakeSelected } from '../core/bake';
 import { Page, Tiles, Group } from '../core/page';
 import { call } from '../core/ae-bridge';
 import { registerCommands } from '../core/commands';
@@ -138,6 +139,7 @@ export class AnimateStudio implements Studio {
         chips,
         h('div', { class: 'row' },
           Btn('Apply to selected layers', () => this.applyAnim(), { variant: 'primary', icon: 'send' }),
+          Btn('Bake to keyframes', () => bakeSelected(), { variant: 'soft', title: 'Replace Kinetix expressions on the selected layers with plain keyframes — faster renders' }),
           Btn('Remove', () => this.clearAnim(), { variant: 'danger' })),
         h('div', { class: 'hint' }, 'Animations follow the layer’s in/out points — trim or move the layer and they stay attached. Duration, strength and eases stay editable on the layer as KX sliders.')),
       grid,
@@ -158,6 +160,7 @@ export class AnimateStudio implements Studio {
           Slider({ label: 'Loop length (s)', min: 0, max: 20, step: 0.1, get: () => w.loop, set: (v) => { w.loop = v; this.save(); }, title: '0 = no loop' })),
         Slider({ label: 'Seed', min: 1, max: 999, get: () => w.seed, set: (v) => { w.seed = v; this.save(); } }),
         Btn('Apply motion to selected layers', () => this.applyWiggle(), { variant: 'primary', icon: 'send' }),
+        Btn('Bake to keyframes', () => bakeSelected(), { variant: 'soft' }),
         h('div', { class: 'hint' }, 'Amount, speed and seed become KX sliders on the layer, so you can keyframe them later.')),
       Group('Procedural motion', [t.el]),
       Group('Loops (apply to selected properties with keyframes)', [loops.el]),
