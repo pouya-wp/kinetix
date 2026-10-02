@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "kinetix-dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "port": 5178 }
+  ]
+}
