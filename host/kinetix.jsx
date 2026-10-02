@@ -166,12 +166,16 @@ KX.bounceExport = function (p) {
   for (var i = 0; i < p.balls.length; i++) {
     var b = p.balls[i];
     KX._ensureDuration(comp, t0 + b.duration + 0.5);
+    var nm;
     if (p.target === 'selected') {
       if (i >= sel.length) break;
-      made.push(KX._bounceOnLayer(comp, sel[i], b, t0, p));
+      nm = KX._bounceOnLayer(comp, sel[i], b, t0, p);
     } else {
-      made.push(KX._bounceShape(comp, b, t0, p));
+      nm = KX._bounceShape(comp, b, t0, p);
     }
+    made.push(nm);
+    var ml = KX._byName(comp, nm);
+    if (ml && b.markers) for (var m = 0; m < b.markers.length; m++) { try { ml.property('ADBE Marker').setValueAtTime(t0 + b.markers[m].t, new MarkerValue(b.markers[m].comment)); } catch (eM) {} }
   }
   app.endUndoGroup();
   return { layers: made };
@@ -1715,6 +1719,97 @@ KX.physBake = function (p) {
     var H = p.hits[h], HL = comp.layer(H.index);
     if (!HL) continue;
     try { HL.property('ADBE Marker').setValueAtTime(t0 + H.t, new MarkerValue('KX:hit ' + H.speed + ' x' + Math.round(H.x * 100))); } catch (e) {}
+  }
+  app.endUndoGroup();
+  return { layers: n };
+};
+
+// --------- Sound Lab / Auto-SFX ---------
+KX.sfxFolder = function () {
+  if (app.project && app.project.file) return app.project.file.parent.fsName + '/Kinetix SFX';
+  return null;
+};
+
+KX._projFolder = function (name) {
+  for (var i = 1; i <= app.project.numItems; i++) { var it = app.project.item(i); if (it instanceof FolderItem && it.name === name) return it; }
+  return app.project.items.addFolder(name);
+};
+
+/** Collect animation events: Kinetix markers, keyframed moves and layer in/out animations. */
+KX.sfxScan = function (p) {
+  var comp = KX._comp(null, false);
+  var ev = [], W = comp.width;
+  var layers = [];
+  if (p.scope === 'selected') layers = comp.selectedLayers; else for (var i = 1; i <= comp.numLayers; i++) layers.push(comp.layer(i));
+  for (var l = 0; l < layers.length; l++) {
+    var L = layers[l];
+    if (L.hasAudio && !L.hasVideo) continue;
+    if (!L.enabled && !(L instanceof CameraLayer) && L.name.indexOf('KX Camera') !== 0) continue;
+    var tf = null;
+    try { tf = L.property('ADBE Transform Group'); } catch (e0) {}
+    var px = 0.5;
+    try { px = tf.property('ADBE Position').valueAtTime(comp.time, false)[0] / W; } catch (e1) {}
+    if (p.markers) {
+      var mk = L.property('ADBE Marker');
+      for (var m = 1; m <= mk.numKeys; m++) {
+        var c = String(mk.keyValue(m).comment);
+        if (c.indexOf('KX:') !== 0) continue;
+        var kind = c.split(' ')[0].substring(3), parts = c.split(' '), strength = 0.6, x = px;
+        for (var q = 1; q < parts.length; q++) {
+          if (parts[q].charAt(0) === 'x') x = parseFloat(parts[q].substring(1)) / 100;
+          else if (!isNaN(parseFloat(parts[q]))) strength = Math.min(1, parseFloat(parts[q]) / 40);
+        }
+        ev.push({ t: mk.keyTime(m), dur: mk.keyValue(m).duration, kind: kind, strength: strength, x: x, layer: L.name });
+      }
+    }
+    if (p.keys && tf) {
+      var pos = tf.property('ADBE Position');
+      if (pos.dimensionsSeparated) pos = tf.property('ADBE Position_0');
+      for (var k = 1; k < pos.numKeys; k++) {
+        var a = pos.keyValue(k), b = pos.keyValue(k + 1), dt = pos.keyTime(k + 1) - pos.keyTime(k);
+        var d = (a instanceof Array) ? Math.sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1])) : Math.abs(b - a);
+        if (d < 40 || dt <= 0 || dt > 3 || pos.numKeys > 30) continue;
+        ev.push({ t: pos.keyTime(k), dur: dt, kind: 'move', strength: Math.min(1, d / dt / 3000), x: ((a instanceof Array ? a[0] : a) + (b instanceof Array ? b[0] : b)) / 2 / W, layer: L.name });
+      }
+      var sc = tf.property('ADBE Scale');
+      for (var s = 1; s < sc.numKeys; s++) {
+        var sa = sc.keyValue(s)[0], sb = sc.keyValue(s + 1)[0];
+        if (sa < 20 && sb > 60) ev.push({ t: sc.keyTime(s), dur: sc.keyTime(s + 1) - sc.keyTime(s), kind: 'pop', strength: 0.7, x: px, layer: L.name });
+      }
+    }
+    if (p.inout && tf) {
+      var fx = L.property('ADBE Effect Parade'), hasAnim = false, outD = 0;
+      try { for (var f = 1; f <= fx.numProperties; f++) { if (fx.property(f).name === 'KX In Duration' && fx.property(f).property(1).value > 0) hasAnim = true; if (fx.property(f).name === 'KX Out Duration') outD = fx.property(f).property(1).value; } } catch (e2) {}
+      if (hasAnim) ev.push({ t: L.inPoint, dur: 0.3, kind: 'in', strength: 0.6, x: px, layer: L.name });
+      if (outD > 0) ev.push({ t: L.outPoint - outD, dur: outD, kind: 'out', strength: 0.5, x: px, layer: L.name });
+    }
+  }
+  return ev;
+};
+
+/** Import WAV files and place them as audio layers (volume in dB, pan -1..1). */
+KX.sfxPlace = function (p) {
+  var comp = KX._comp(null, false);
+  app.beginUndoGroup('Kinetix SFX');
+  var folder = KX._projFolder('Kinetix SFX'), n = 0;
+  for (var i = 0; i < p.files.length; i++) {
+    var F = p.files[i];
+    var item = app.project.importFile(new ImportOptions(new File(F.path)));
+    item.parentFolder = folder;
+    var L = comp.layers.add(item);
+    L.startTime = (F.t === null || F.t === undefined) ? comp.time : F.t;
+    L.name = KX._uniqueName(comp, F.name);
+    L.label = 4;
+    try { L.property('ADBE Audio Group').property('ADBE Audio Levels').setValue([F.db, F.db]); } catch (e) {}
+    if (F.pan && Math.abs(F.pan) > 0.02) {
+      try {
+        var sm = L.property('ADBE Effect Parade').addProperty('ADBE Aud Stereo Mixer');
+        var lv = 100 - Math.max(0, F.pan) * 100, rv = 100 + Math.min(0, F.pan) * 100;
+        sm.property(1).setValue(lv); sm.property(2).setValue(rv);
+      } catch (e2) {}
+    }
+    L.moveToEnd();
+    n++;
   }
   app.endUndoGroup();
   return { layers: n };

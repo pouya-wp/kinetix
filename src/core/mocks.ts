@@ -50,3 +50,6 @@ registerMock('typeApply', (r: any) => { console.log('[mock] typeApply', r); retu
 registerMock('typeClear', () => ({ layers: 1 }));
 registerMock('physScene', () => ({ comp: { w: 1920, h: 1080, fps: 30, time: 0 }, layers: [] }));
 registerMock('physBake', (p: any) => { console.log('[mock] physBake', p); return { layers: p.items.length }; });
+registerMock('sfxFolder', () => null);
+registerMock('sfxScan', () => [{ t: 0.5, dur: 0, kind: 'hit', strength: 0.8, x: 0.3, layer: 'Ball' }, { t: 1.2, dur: 0.8, kind: 'cam', strength: 0.6, x: 0.5, layer: 'Rig' }, { t: 2, dur: 0.3, kind: 'in', strength: 0.6, x: 0.7, layer: 'Title' }]);
+registerMock('sfxPlace', (p: any) => ({ layers: p.files.length }));

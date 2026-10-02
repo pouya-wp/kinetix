@@ -1,5 +1,5 @@
 import type { BallObj, Comp } from '../core/state';
-import { durationOf, sample, buildKeyed, effectiveTravel } from './solver';
+import { durationOf, sample, buildKeyed, effectiveTravel, trackOf } from './solver';
 import { simplifyKeys, round } from '../core/math';
 
 export type ExportStyle = 'baked' | 'smart' | 'expression';
@@ -18,6 +18,8 @@ export interface BallExport {
   spin: ChannelKeys;
   expr?: { pos: string; deformRot: string; deformScale: string; spin: string };
   duration: number;
+  /** contact markers (KX:contact <strength> x<screen%>) for Auto-SFX */
+  markers: { t: number; comment: string }[];
 }
 export interface BouncePayload { comp: Comp; style: ExportStyle; target: ExportTarget; balls: BallExport[] }
 
@@ -89,6 +91,7 @@ export function buildBallExport(o: BallObj, comp: Comp, style: ExportStyle): Bal
     deformScale: pick(scl, [0.4, 0.4]),
     spin: pick(spin.map((a) => [a]), [0.5]),
     duration: dur,
+    markers: contactMarkers(o, comp),
   };
   // collapse constant channels
   for (const k of ['deformRot', 'deformScale', 'spin'] as const) {
@@ -193,4 +196,12 @@ function buildExpressions(o: BallObj) {
     deformScale: src + '[st.sa * 100, st.sb * 100];',
     spin: src + 'st.rot - st.ax;',
   };
+}
+
+function contactMarkers(o: BallObj, comp: Comp) {
+  const tr = trackOf(o, comp.w, comp.h);
+  if (tr.kind === 'keyed') {
+    return tr.tl.segs.map((s) => ({ t: s.t0 + s.tUp + s.tHang + s.tDown, comment: `KX:contact ${Math.round(Math.min(40, s.impact / 60))} x${Math.round((s.p1[0] / comp.w) * 100)}` }));
+  }
+  return tr.tr.contacts.map((c) => ({ t: o.delay + c.t, comment: `KX:contact ${Math.round(Math.min(40, c.speed / 60))} x${Math.round((c.x / comp.w) * 100)}` }));
 }
