@@ -94,7 +94,7 @@ export interface TextLine {
   justify: 'left' | 'center' | 'right';
 }
 export type GapPolicy = 'fill' | 'close' | 'center' | 'keep';
-export type TextStyle = 'magic' | 'liquid' | 'scramble' | 'wave' | 'elastic' | 'split' | 'typewriter';
+export type TextStyle = 'flow' | 'magic' | 'liquid' | 'scramble' | 'wave' | 'elastic' | 'split' | 'typewriter';
 export type BoxStyle = 'spring' | 'elastic' | 'liquid' | 'squash' | 'corners' | 'pill' | 'wipe' | 'pop';
 export interface TextState {
   lines: TextLine[];

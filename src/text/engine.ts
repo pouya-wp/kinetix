@@ -12,7 +12,7 @@ export interface GlyphXf { x: number; y: number; sx: number; sy: number; rot: nu
 export interface GlyphDraw { line: number; gi: number; xf: GlyphXf; glyph: Glyph }
 export interface BoxFrame { x0: number; y0: number; x1: number; y1: number; r: number; poly?: Poly; scale: number; op: number }
 export interface LiquidSrc { shapes: Poly[][]; blend: number; cell: number }
-export interface TextFrame { seg: Seg | null; u: number; glyphs: GlyphDraw[]; liquid: Poly[] | null; liquidSrc: LiquidSrc | null; box: BoxFrame | null }
+export interface TextFrame { seg: Seg | null; u: number; glyphs: GlyphDraw[]; liquid: Poly[] | null; liquidSrc: LiquidSrc | null; box: BoxFrame | null; blur?: number }
 
 const REST: GlyphXf = { x: 0, y: 0, sx: 1, sy: 1, rot: 0, op: 1 };
 const backOut = (t: number, s = 1.70158) => 1 + (s + 1) * (t - 1) ** 3 + s * (t - 1) ** 2;
@@ -48,7 +48,7 @@ export class TextEngine {
     this.segs = planTimeline(this.lines, { policy: st.policy, dur: st.dur, minDur: st.minDur, maxDur: st.maxDur, intro: st.intro, outro: st.outro });
     // per transition style (optionally randomised)
     this.styleOf.clear();
-    const all: TextStyle[] = ['magic', 'liquid', 'wave', 'elastic', 'split', 'scramble', 'typewriter'];
+    const all: TextStyle[] = ['flow', 'magic', 'liquid', 'wave', 'elastic', 'split', 'scramble', 'typewriter'];
     const r = rng(st.seed);
     this.segs.forEach((s, i) => this.styleOf.set(i, st.randomize ? all[Math.floor(r() * all.length)] : st.style));
   }
@@ -76,6 +76,20 @@ export class TextEngine {
 
   styleAt(idx: number): TextStyle { return this.styleOf.get(idx) ?? this.get().text.style; }
 
+  /**
+   * Export mode for the optical-flow style: lines simply hard-cut at the middle
+   * of each transition; After Effects' Timewarp (Pixel Motion) invents the
+   * in-between frames, exactly like the Twixtor text-morph technique.
+   */
+  flowExport = false;
+
+  /** Flow transitions as {t0, t1, tc} windows (cut at tc). */
+  flowWindows() {
+    const out: { t0: number; t1: number; tc: number }[] = [];
+    this.segs.forEach((s, i) => { if (s.kind === 'trans' && this.styleAt(i) === 'flow') out.push({ t0: s.t0, t1: s.t1, tc: (s.t0 + s.t1) / 2 }); });
+    return out;
+  }
+
   // ───────── glyph evaluation ─────────
   /** `merge` = run the (expensive) gooey merge for liquid frames. */
   frame(t: number, withBox = true, merge = true): TextFrame {
@@ -85,9 +99,14 @@ export class TextEngine {
       const style = this.styleAt(idx);
       switch (seg.kind) {
         case 'hold': this.pushLine(out, seg.line, () => REST); break;
-        case 'in': this.inOut(out, seg.line, u, style, true); break;
-        case 'out': this.inOut(out, seg.line, u, style, false); break;
-        case 'trans': this.trans(out, seg.from, seg.to, u, style); break;
+        case 'in': this.inOut(out, seg.line, u, style === 'flow' ? 'magic' : style, true); break;
+        case 'out': this.inOut(out, seg.line, u, style === 'flow' ? 'magic' : style, false); break;
+        case 'trans':
+          if (style === 'flow') {
+            if (this.flowExport) this.pushLine(out, u < 0.5 ? seg.from : seg.to, () => REST);
+            else this.flowPreview(out, seg.from, seg.to, u);
+          } else this.trans(out, seg.from, seg.to, u, style);
+          break;
       }
     }
     if (withBox && this.get().text.boxOn) out.box = this.boxAt(t);
@@ -280,6 +299,33 @@ export class TextEngine {
       if (xf.op > 0.001) draws.push({ line: b, gi: ib, xf, glyph: g });
     });
     out.glyphs = draws;
+  }
+
+  /**
+   * Preview of the optical-flow morph: the whole line flows into the next one —
+   * glyphs pair up by their relative position across the line (like pixel motion
+   * would), outlines morph, everything stretches along its motion and softens.
+   */
+  private flowPreview(out: TextFrame, a: number, b: number, u: number) {
+    const A = this.geo(a), B = this.geo(b);
+    if (!A || !B) return;
+    const e = ease([0.65, 0, 0.35, 1], u);
+    const n = Math.max(A.glyphs.length, B.glyphs.length);
+    const loops: Poly[] = [];
+    let maxH = 0;
+    for (let k = 0; k < n; k++) {
+      const ga = A.glyphs[Math.min(A.glyphs.length - 1, Math.floor((k * A.glyphs.length) / n))];
+      const gb = B.glyphs[Math.min(B.glyphs.length - 1, Math.floor((k * B.glyphs.length) / n))];
+      if (!ga || !gb) continue;
+      maxH = Math.max(maxH, ga.h, gb.h);
+      const mg = morphGlyph(ga, gb, e);
+      const dx = gb.cx - ga.cx, dy = gb.cy - ga.cy;
+      const str = Math.sin(u * Math.PI) * Math.min(0.6, Math.hypot(dx, dy) / Math.max(1, ga.w * 4));
+      loops.push(...stretchContours(mg, Math.atan2(dy, dx), 1 + str));
+    }
+    out.liquid = loops;
+    out.blur = Math.sin(u * Math.PI) * maxH * 0.06;
+    out.glyphs = A.glyphs.map((g, k) => ({ line: a, gi: k, xf: { ...REST, op: 0 }, glyph: g }));
   }
 
   /** Liquid: letters morph outline-to-outline with a light wobble — no merge, clean edges. */

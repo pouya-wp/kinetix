@@ -90,6 +90,6 @@ export function openInExplorer(path: string) {
   const req = nodeRequire();
   if (!req) return;
   const cp = req('child_process');
-  if (process.platform === 'win32') cp.spawn('explorer', ['/select,', path.replace(/\//g, '\\')], { detached: true });
+  if (/win/i.test(navigator.platform)) cp.spawn('explorer', ['/select,', path.replace(/\//g, '\\')], { detached: true });
   else cp.spawn('open', ['-R', path], { detached: true });
 }

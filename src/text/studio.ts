@@ -17,8 +17,9 @@ const S = () => store.state;
 const T = () => store.state.text;
 
 export const STYLE_INFO: Record<TextStyle, { label: string; desc: string }> = {
+  flow: { label: 'Liquid Glass', desc: 'Optical-flow morph (Twixtor technique) — the text flows into the next' },
   magic: { label: 'Magic Move', desc: 'Shared letters slide into place, the rest pop in & out' },
-  liquid: { label: 'Liquid Morph', desc: 'Letters melt into each other like goo' },
+  liquid: { label: 'Liquid Melt', desc: 'Letter outlines melt into each other' },
   wave: { label: 'Stagger Wave', desc: 'Letters ripple up and down in a wave' },
   elastic: { label: 'Elastic Drop', desc: 'New letters drop in on springs, old ones fall away' },
   split: { label: 'Split & Slide', desc: 'Words part from the centre and slide' },
@@ -31,7 +32,7 @@ const BOX_INFO: Record<BoxStyle, string> = {
 
 const PRESETS: { id: string; label: string; apply: (t: TextState) => void }[] = [
   { id: 'tiktok', label: 'TikTok captions', apply: (t) => { t.style = 'magic'; t.boxOn = true; t.box.style = 'spring'; t.box.color = '#ffffff'; t.textColor = '#111111'; t.box.radius = 18; t.box.pill = false; t.travel = 'arc'; t.overshoot = 0.35; t.stagger = 0.25; } },
-  { id: 'apple', label: 'Liquid glass', apply: (t) => { t.style = 'liquid'; t.boxOn = true; t.box.style = 'liquid'; t.box.color = '#ffffff'; t.box.opacity = 22; t.textColor = '#ffffff'; t.box.pill = true; t.liquidBlend = 40; t.box.stiffness = 160; t.box.damping = 12; } },
+  { id: 'apple', label: 'Liquid glass', apply: (t) => { t.style = 'flow'; t.boxOn = true; t.box.style = 'liquid'; t.box.color = '#ffffff'; t.box.opacity = 22; t.textColor = '#ffffff'; t.box.pill = true; t.liquidBlend = 40; t.box.stiffness = 160; t.box.damping = 12; } },
   { id: 'minimal', label: 'Minimal', apply: (t) => { t.style = 'wave'; t.boxOn = false; t.textColor = '#ffffff'; t.travel = 'straight'; t.overshoot = 0; t.stagger = 0.4; } },
   { id: 'bold', label: 'Bold pop', apply: (t) => { t.style = 'elastic'; t.boxOn = true; t.box.style = 'pop'; t.box.color = '#d1fe17'; t.textColor = '#111111'; t.box.radius = 14; t.box.pill = false; t.travel = 'spring'; t.overshoot = 0.6; } },
   { id: 'neon', label: 'Neon pill', apply: (t) => { t.style = 'magic'; t.boxOn = true; t.box.style = 'pill'; t.box.color = '#b388ff'; t.textColor = '#ffffff'; t.box.pill = true; t.travel = 'spring'; t.overshoot = 0.45; } },
@@ -268,7 +269,7 @@ export class TextStudio implements Studio {
     }
     try {
       toast('Reading text layers and outlining glyphs…', 'info', 2000);
-      const r = await call<{ lines: TextLine[]; glyphs: Record<string, AEGlyphGroup[]>; comp: { w: number; h: number; fps: number; duration: number; name: string }; warnings: string[] }>('textAnalyze');
+      const r = await call<{ lines: TextLine[]; glyphs: Record<string, AEGlyphGroup[]>; comp: { w: number; h: number; fps: number; duration: number; name: string }; warnings: string[] }>('textAnalyze', { outlines: T().randomize || T().style !== 'flow' });
       if (!r.lines.length) { toast('Select one or more text layers in the timeline first', 'info'); return; }
       this.geos.clear();
       const lines = r.lines.map((l) => ({ ...l, id: uid('ln') }));
@@ -337,14 +338,14 @@ export class TextStudio implements Studio {
       const payload = buildTextPayload(this.engine, T(), S().comp, [...T().lines].sort((a, b) => a.t0 - b.t0));
       step(0.2);
       const head = { ...payload, lines: [], baked: [], box: null };
-      const { compId } = await call<{ compId: number }>('textBegin', head);
+      const { compId, srcId } = await call<{ compId: number; srcId: number }>('textBegin', head);
       const total = payload.lines.length + payload.baked.length + 2;
       let done = 0;
-      for (const ln of payload.lines) { await call('textLine', compId, ln); step(0.2 + (0.8 * ++done) / total); }
-      for (const b of payload.baked) { await call('textBaked', compId, b); step(0.2 + (0.8 * ++done) / total); }
+      for (const ln of payload.lines) { await call('textLine', srcId, ln); step(0.2 + (0.8 * ++done) / total); }
+      for (const b of payload.baked) { await call('textBaked', srcId, b); step(0.2 + (0.8 * ++done) / total); }
       if (payload.box) await call('textBox', compId, payload.box, head);
       step(0.2 + (0.8 * ++done) / total);
-      await call('textFinish', compId, head);
+      await call('textFinish', compId, head, srcId);
       step(1);
       const keys = payload.lines.reduce((n, l) => n + l.glyphs.reduce((m, g) => m + g.pos.t.length + g.op.t.length + g.scale.t.length + g.rot.t.length, 0), 0);
       toast(inAE ? `Text Morph built · ${payload.lines.length} lines · ${keys} keys` : `Preview mode: payload with ${payload.lines.length} lines, ${payload.baked.length} baked layers, ${keys} keys`);
@@ -379,7 +380,9 @@ export class TextStudio implements Studio {
     ctx.fillStyle = st.textColor;
     const path = (loops: Poly[]) => { for (const l of loops) { if (l.length < 3) continue; ctx.moveTo(l[0][0], l[0][1]); for (let i = 1; i < l.length; i++) ctx.lineTo(l[i][0], l[i][1]); ctx.closePath(); } };
     if (fr.liquid) {
+      if (fr.blur && fr.blur > 0.2) ctx.filter = `blur(${(fr.blur * vp.zoom).toFixed(2)}px)`;
       ctx.beginPath(); path(fr.liquid); ctx.fill('nonzero');
+      ctx.filter = 'none';
     }
     for (const d of fr.glyphs) {
       if (d.xf.op < 0.01) continue;

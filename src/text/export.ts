@@ -10,7 +10,7 @@ import { smoothPath, type Poly } from '../shapes/geometry';
 
 export interface Chan { t: number[]; v: (number | number[])[] }
 export interface GlyphOut { name: string; paths: PathData[]; anchor: Vec; pos: Chan; scale: Chan; rot: Chan; op: Chan }
-export interface LineOut { name: string; in: number; out: number; glyphs: GlyphOut[] }
+export interface LineOut { name: string; in: number; out: number; glyphs: GlyphOut[]; orig?: number; useOrig?: boolean; fadeIn?: [number, number]; fadeOut?: [number, number] }
 export interface BakedOut { name: string; in: number; out: number; paths: PathKeys[] }
 export interface BoxOut { kind: 'rect' | 'path'; size?: Chan; pos?: Chan; round?: Chan; path?: PathKeys; scale: Chan; op: Chan; in: number; out: number }
 export interface TextPayload {
@@ -28,6 +28,8 @@ export interface TextPayload {
   box: BoxOut | null;
   originals: number[];
   disableOriginals: boolean;
+  /** optical-flow (Liquid Glass) transitions: hard cut at tc, Timewarp re-times t0..t1 */
+  flow: { t0: number; t1: number; tc: number }[];
 }
 
 const BAKED_STYLES = new Set(['liquid', 'scramble']);
@@ -53,6 +55,8 @@ export function buildTextPayload(engine: TextEngine, st: TextState, comp: Comp, 
   const dur = engine.duration;
   const nF = Math.ceil(dur * fps);
   const L = engine.lines;
+  engine.flowExport = true;
+  try {
 
   // per (line, glyph) channels sampled every frame
   type Rec = { t: number[]; pos: number[][]; scale: number[][]; rot: number[][]; op: number[][] };
@@ -125,7 +129,18 @@ export function buildTextPayload(engine: TextEngine, st: TextState, comp: Comp, 
       });
     });
     const label = line.text.replace(/\s+/g, ' ').slice(0, 28);
-    linesOut.push({ name: `Line ${String(li + 1).padStart(2, '0')} · ${label}`, in: span[0], out: span[1] + 1 / fps, glyphs });
+    const lo: LineOut = { name: `Line ${String(li + 1).padStart(2, '0')} · ${label}`, in: span[0], out: span[1] + 1 / fps, glyphs };
+    // no real AE outlines (Liquid Glass analyze skips them): reuse the original text layer
+    if (line.layer > 0 && !geo.glyphs.some((g) => g.paths?.length)) {
+      lo.useOrig = true;
+      lo.orig = line.layer;
+      lo.glyphs = [];
+      for (const sg of engine.segs) {
+        if (sg.kind === 'in' && sg.line === li) lo.fadeIn = [sg.t0, sg.t1];
+        if (sg.kind === 'out' && sg.line === li) lo.fadeOut = [sg.t0, sg.t1];
+      }
+    }
+    linesOut.push(lo);
   });
 
   const baked: BakedOut[] = [];
@@ -175,6 +190,7 @@ export function buildTextPayload(engine: TextEngine, st: TextState, comp: Comp, 
   }
 
   return {
+    flow: engine.flowWindows(),
     comp: { ...comp, duration: Math.max(comp.duration, dur) },
     name: 'Kinetix TextMorph',
     duration: dur,
@@ -190,6 +206,7 @@ export function buildTextPayload(engine: TextEngine, st: TextState, comp: Comp, 
     originals: lines.map((l) => l.layer).filter((x) => x > 0),
     disableOriginals: st.disableOriginals,
   };
+  } finally { engine.flowExport = false; }
 }
 
 export { toPath };
