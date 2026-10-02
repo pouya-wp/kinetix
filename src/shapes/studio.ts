@@ -3,7 +3,8 @@ import { Viewport } from '../core/viewport';
 import { clock } from '../core/clock';
 import { Transport } from '../core/transport';
 import { SceneSection, CompSection, ViewSection, GuideSection } from '../core/common-ui';
-import { h, Section, Slider, Toggle, Seg, Btn, ColorField, Swatches, TextInput, Field, Select, clear, toast, icon, refreshAll, PALETTE, Chips } from '../ui/kit';
+import { h, Section, Slider, Toggle, Seg, Btn, ColorField, Swatches, TextInput, Field, Select, clear, toast, icon, refreshAll, PALETTE, Chips, modal, pickFile } from '../ui/kit';
+import { tracedText, tracedImage, chain, polyPath, type Piece } from './trace';
 import { CurveEditor } from '../ui/curve';
 import { uid, vdist, type Vec } from '../core/math';
 import { ShapeEngine, keyState, BEHAVIORS } from './engine';
@@ -405,7 +406,10 @@ export class ShapesStudio implements Studio {
           store.silent((s) => { s.shapes.selKey = null; });
         }, { size: 'sm', icon: 'trash' })),
       morphInto,
-      h('div', { class: 'hint' }, 'Move the playhead, then pick a form or another shape: a key is created there and the outline morphs into it.'),
+      h('div', { class: 'row' },
+        Btn('Into text…', () => this.textDialog(), { size: 'sm', variant: 'soft' }),
+        Btn('Into image…', () => this.imageDialog(), { size: 'sm', variant: 'soft' })),
+      h('div', { class: 'hint' }, 'Move the playhead, then pick a form, another shape, a word or a logo: a key is created there and the outline morphs into it.'),
       k ? h('div', { class: 'stack' },
         h('div', { class: 'divider' }),
         Slider({ label: 'Key time (s)', min: 0, max: S().comp.duration, step: 0.01, get: () => K()?.t ?? 0, set: (v, f) => ek((q) => { q.t = v; }, f), begin: () => store.begin() }),
@@ -463,10 +467,111 @@ export class ShapesStudio implements Studio {
     this.onState();
   }
 
+  // ───────── morph into text / image ─────────
+  private pieceOpts = { split: true, stagger: 0.05, text: 'Kinetix', font: 'Inter', weight: 800, height: 0, mode: 'alpha' as 'alpha' | 'dark' | 'light', thr: 0.5, size: 0 };
+
+  private textDialog() {
+    const it = this.sel();
+    if (!it) return;
+    const o = this.pieceOpts;
+    const cur = keyState(it, clock.t)!;
+    if (!o.height) o.height = Math.max(60, Math.min(260, bbox(cur.poly).h * cur.sy));
+    modal((close) => h('div', { class: 'stack', style: { minWidth: '300px' } },
+      h('b', null, 'Morph into text'),
+      Field('Text', TextInput({ get: () => o.text, set: (v) => { o.text = v; } })),
+      Field('Font', TextInput({ get: () => o.font, set: (v) => { o.font = v; }, placeholder: 'Any installed font, e.g. Montserrat' })),
+      Seg([{ value: '400', label: 'Regular' }, { value: '700', label: 'Bold' }, { value: '900', label: 'Black' }], () => (o.weight >= 850 ? '900' : o.weight >= 600 ? '700' : '400'), (v) => { o.weight = +v; }),
+      Slider({ label: 'Height (px)', min: 30, max: 600, get: () => o.height, set: (v) => { o.height = v; } }),
+      this.pieceControls(),
+      h('div', { class: 'row' }, Btn('Cancel', close, { variant: 'ghost' }), Btn('Morph', () => {
+        const ps = tracedText(o.text.trim(), o.font.trim() || 'Inter', o.weight, o.height);
+        if (!ps.length) { toast('Nothing to trace — type some text', 'info'); return; }
+        close();
+        this.morphIntoPieces(ps, o.text.trim());
+      }, { variant: 'primary' }))));
+  }
+
+  private async imageDialog() {
+    const it = this.sel();
+    if (!it) return;
+    const f = await pickFile('image/*');
+    if (!f) return;
+    const o = this.pieceOpts;
+    const b = bbox(keyState(it, clock.t)!.poly);
+    if (!o.size) o.size = Math.max(120, Math.min(600, Math.max(b.w, b.h) * 1.4));
+    modal((close) => h('div', { class: 'stack', style: { minWidth: '300px' } },
+      h('b', null, 'Morph into image · ' + f.name),
+      h('div', { class: 'hint' }, 'Logos, icons and silhouettes work best. Transparent PNG / SVG use their alpha; photos use brightness.'),
+      Seg([{ value: 'alpha', label: 'Auto / alpha' }, { value: 'dark', label: 'Dark parts' }, { value: 'light', label: 'Light parts' }], () => o.mode, (v) => { o.mode = v; }),
+      Slider({ label: 'Threshold', min: 0.1, max: 0.9, step: 0.01, get: () => o.thr, set: (v) => { o.thr = v; } }),
+      Slider({ label: 'Size (px)', min: 40, max: 1600, get: () => o.size, set: (v) => { o.size = v; } }),
+      this.pieceControls(),
+      h('div', { class: 'row' }, Btn('Cancel', close, { variant: 'ghost' }), Btn('Morph', async () => {
+        try {
+          const ps = await tracedImage(f, o.size, o.mode, o.thr);
+          if (!ps.length) { toast('No outline found — try the other mode or threshold', 'info'); return; }
+          close();
+          this.morphIntoPieces(ps, f.name.replace(/\.[^.]+$/, ''));
+        } catch (e: any) { toast(e.message, 'err'); }
+      }, { variant: 'primary' }))));
+  }
+
+  private pieceControls() {
+    const o = this.pieceOpts;
+    return h('div', { class: 'stack' },
+      Seg([{ value: 'split', label: 'Split into pieces' }, { value: 'one', label: 'One shape' }], () => (o.split ? 'split' : 'one'), (v) => { o.split = v === 'split'; refreshAll(); }),
+      Slider({ label: 'Cascade (s per piece)', min: 0, max: 0.3, step: 0.01, get: () => o.stagger, set: (v) => { o.stagger = v; } }),
+      h('div', { class: 'hint' }, 'Split: the shape breaks into one blob per letter / part (put it in a merge group for a gooey split). One shape: a single outline flows into the whole word.'));
+  }
+
+  /** The selected shape morphs into traced pieces, centred on its current position. */
+  private morphIntoPieces(ps: Piece[], label: string) {
+    const it = this.sel();
+    if (!it) return;
+    if (it.keys.length === 1 && Math.abs(it.keys[0].t - clock.t) < 1e-3) clock.seek(Math.min(S().comp.duration, clock.t + 1));
+    const t = clock.t, o = this.pieceOpts;
+    const ks = keyState(it, t)!;
+    const one = !o.split || ps.length === 1;
+    const own: Piece = one
+      ? { poly: ps.length > 1 ? chain(ps.map((p) => p.poly)) : ps[0].poly, cx: 0, cy: 0, area: 0 }
+      : ps.reduce((a, b) => (b.area > a.area ? b : a));
+    const order = [...ps].sort((a, b) => a.cx - b.cx);
+    store.set((s) => {
+      const x = s.shapes.items.find((q) => q.id === it.id)!;
+      if (x.keys.length === 1 && Math.abs(x.keys[0].t - t) > 1e-3) { x.keys.push({ ...structuredClone(x.keys[0]), id: uid('k'), t }); x.keys.sort((a, b) => a.t - b.t); }
+      const base = structuredClone(x);
+      const setKey = (item: ShapeItem, p: Piece, at: number) => {
+        // keys after the morph point belong to the old animation
+        const prevKeys = item.keys.filter((k) => k.t < at - 1e-3);
+        const prev = prevKeys[prevKeys.length - 1];
+        item.keys = prevKeys;
+        item.keys.push({ id: uid('k'), t: at, path: polyPath(p.poly, p.cx, p.cy), x: ks.x + p.cx, y: ks.y + p.cy, rot: 0, sx: 1, sy: 1, ease: prev ? ([...prev.ease] as any) : [0.5, 0, 0.2, 1] });
+        item.points = Math.max(item.points, Math.min(720, Math.round(p.poly.length * 1.3)));
+      };
+      setKey(x, own, t + (one ? 0 : order.indexOf(own)) * o.stagger);
+      if (!one) {
+        let n = 0;
+        for (const p of order) {
+          if (p === own) continue;
+          const c: ShapeItem = structuredClone(base);
+          c.id = uid('it');
+          c.name = `${x.name} · ${label} ${++n}`;
+          c.keys.forEach((k) => { k.id = uid('k'); });
+          setKey(c, p, t + order.indexOf(p) * o.stagger);
+          s.shapes.items.push(c);
+        }
+      }
+      s.shapes.selKey = null;
+    });
+    toast(one ? `Morphs into “${label}”` : `Splits into ${ps.length} pieces of “${label}”` + (it.group ? '' : ' — put them in a merge group for a gooey split'));
+    this.sig = '';
+    this.onState();
+  }
+
   private behaviorsSection() {
     const it = this.sel()!;
     const types = Object.keys(BEHAVIORS) as BehaviorType[];
-    const add = h('div', { class: 'chips' }, ...types.map((t) => h('button', { class: 'chip', onclick: () => this.editItem((x) => { x.behaviors.push(behavior(t)); }) }, '+ ' + BEHAVIORS[t].label)));
+    const add = h('div', { class: 'chips' }, ...types.map((t) => h('button', { class: 'chip', onclick: () => this.editItem((x) => { x.behaviors.push(behavior(t, t === 'melt' ? { start: Math.round(clock.t * 10) / 10 } : {})); if (t === 'melt') x.points = Math.max(x.points, 200); }) }, '+ ' + BEHAVIORS[t].label)));
     const cards = it.behaviors.map((b) => {
       const bid = b.id;
       const B = () => this.sel()?.behaviors.find((x) => x.id === bid) ?? b;
@@ -707,9 +812,10 @@ export class ShapesStudio implements Studio {
       ctx.save();
       ctx.globalAlpha = it.opacity / 100;
       ctx.beginPath();
-      fillPoly(poly);
+      const trail = sc.trails.get(it.id);
+      if (trail?.length) trail.forEach(fillPoly); else fillPoly(poly);
       ctx.fillStyle = it.color;
-      ctx.fill();
+      ctx.fill('nonzero');
       if (it.strokeW > 0) { ctx.strokeStyle = it.stroke; ctx.lineWidth = it.strokeW; ctx.lineJoin = 'round'; ctx.stroke(); }
       ctx.restore();
     }

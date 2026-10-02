@@ -17,6 +17,8 @@ export const BEHAVIORS: Record<BehaviorType, { label: string; params: Record<str
   orbit: { label: 'Orbit', params: { radius: [80, 0, 1000, 1, 'Radius (px)'], speed: [0.25, -3, 3, 0.01, 'Turns / s'], phase: [0, 0, 1, 0.01, 'Phase'] } },
   drift: { label: 'Drift', params: { amp: [120, 0, 1200, 1, 'Distance (px)'], speed: [0.2, 0, 3, 0.01, 'Speed'], seed: [3, 0, 999, 1, 'Seed'] } },
   spin: { label: 'Spin', params: { speed: [45, -720, 720, 1, 'Degrees / s'] } },
+  melt: { label: 'Melt', params: { start: [1, 0, 60, 0.05, 'Starts at (s)'], dur: [1.4, 0.1, 8, 0.05, 'Duration (s)'], drips: [5, 0, 14, 1, 'Drips'], length: [1.1, 0, 4, 0.01, 'Drip length'], sag: [0.45, 0, 1, 0.01, 'Sag'], spread: [0.25, 0, 1, 0.01, 'Puddle spread'], reverse: [0, 0, 1, 1, 'Reverse (form from a puddle)'], seed: [7, 0, 999, 1, 'Seed'] } },
+  trail: { label: 'Gooey trail', params: { count: [7, 1, 16, 1, 'Blobs'], lag: [0.04, 0.01, 0.2, 0.005, 'Lag (s)'], taper: [0.8, 0, 1, 0.01, 'Taper'], blend: [45, 0, 200, 1, 'Goo'] } },
 };
 
 export function defaultParams(type: BehaviorType) {
@@ -141,6 +143,34 @@ function applyBehaviors(poly: Poly, bs: Behavior[], t: number, loopDur: number):
         out = out.map((v) => [v[0] + ox, v[1] + oy] as Vec);
         break;
       }
+      case 'melt': {
+        const raw = Math.max(0, Math.min(1, (t - p.start) / Math.max(0.01, p.dur)));
+        const pr = p.reverse >= 0.5 ? 1 - raw : raw;
+        if (pr <= 0) break;
+        const e = pr * pr * (3 - 2 * pr);
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const v of out) { x0 = Math.min(x0, v[0]); x1 = Math.max(x1, v[0]); y0 = Math.min(y0, v[1]); y1 = Math.max(y1, v[1]); }
+        const w = Math.max(1, x1 - x0), hh = Math.max(1, y1 - y0);
+        // drips: seeded bumps along the bottom edge, each with its own speed
+        const nd = Math.round(p.drips);
+        const drips: [number, number, number, number][] = [];
+        for (let k = 0; k < nd; k++) {
+          const r1 = noise1(k * 3.1 + 0.5, p.seed, 0) * 0.5 + 0.5, r2 = noise1(k * 7.7 + 1.3, p.seed + 11, 0) * 0.5 + 0.5, r3 = noise1(k * 5.3 + 2.1, p.seed + 23, 0) * 0.5 + 0.5;
+          drips.push([0.1 + 0.8 * ((k + r1 * 0.8) / Math.max(1, nd)), 0.025 + 0.05 * r2, 0.45 + 0.55 * r3, 0.6 + 0.8 * r2]);
+        }
+        out = out.map((v) => {
+          const xn = (v[0] - x0) / w, yn = (v[1] - y0) / hh;
+          const low = Math.pow(yn, 1.6);
+          let d = 0;
+          for (const [cx, wd, amp, spd] of drips) d += amp * Math.exp(-(((xn - cx) / wd) ** 2)) * Math.min(1, e * spd);
+          // everything sinks toward the base, the base widens into a puddle, drips run below it
+          const sink = e * p.sag * (y1 - v[1]) * 0.75;
+          const drip = d * low * low * e * p.length * hh * 0.6;
+          const spread = (v[0] - c[0]) * e * p.spread * low;
+          return [v[0] + spread, v[1] + sink + drip] as Vec;
+        });
+        break;
+      }
       case 'spin': {
         const sp = loopDur > 0 ? (Math.round((p.speed * loopDur) / 360) * 360) / loopDur || p.speed : p.speed;
         const a = (sp * t * Math.PI) / 180, cs = Math.cos(a), sn = Math.sin(a);
@@ -220,18 +250,48 @@ export class ShapeEngine {
     return c.offsets[frame];
   }
 
-  /** Whole scene: individual polys + merged group contours. */
-  scene(t: number): { items: Map<string, Poly>; groups: Map<string, Poly[]> } {
+  /** Gooey trail: shrinking copies of the shape at earlier times. */
+  ghosts(item: ShapeItem, t: number): Poly[] {
+    const b = item.behaviors.find((x) => x.type === 'trail' && x.on);
+    if (!b) return [];
+    const out: Poly[] = [];
+    const n = Math.round(b.p.count);
+    for (let k = 1; k <= n; k++) {
+      const p = this.base(item, Math.max(0, t - k * b.p.lag));
+      if (!p) continue;
+      const s = 1 - b.p.taper * (k / (n + 1));
+      const c = centroid(p);
+      out.push(p.map((v) => [c[0] + (v[0] - c[0]) * s, c[1] + (v[1] - c[1]) * s] as Vec));
+    }
+    return out;
+  }
+
+  /** A trailing shape and its ghosts melted into one outline (shapes outside merge groups). */
+  trailLoops(item: ShapeItem, poly: Poly, t: number): Poly[] | null {
+    const b = item.behaviors.find((x) => x.type === 'trail' && x.on);
+    if (!b) return null;
+    const loops = mergePolys([poly, ...this.ghosts(item, t)], { blend: b.p.blend, cell: 4, minArea: 20 });
+    return loops.map((l) => smoothLoop(l, 1));
+  }
+
+  /** Whole scene: individual polys, merged group contours and gooey trails. */
+  scene(t: number): { items: Map<string, Poly>; groups: Map<string, Poly[]>; trails: Map<string, Poly[]> } {
     const s = this.getState().shapes;
     const items = new Map<string, Poly>();
+    const trails = new Map<string, Poly[]>();
     for (const it of s.items) {
       if (!it.visible) continue;
       const p = this.item(it, t);
-      if (p) items.set(it.id, p);
+      if (!p) continue;
+      items.set(it.id, p);
+      if (!it.group || !s.groups.some((g) => g.id === it.group)) { const tl = this.trailLoops(it, p, t); if (tl) trails.set(it.id, tl); }
     }
     const groups = new Map<string, Poly[]>();
-    for (const g of s.groups) groups.set(g.id, this.merge(g, s.items.filter((i) => i.group === g.id && items.has(i.id)).map((i) => items.get(i.id)!)));
-    return { items, groups };
+    for (const g of s.groups) {
+      const members = s.items.filter((i) => i.group === g.id && items.has(i.id));
+      groups.set(g.id, this.merge(g, members.flatMap((i) => [items.get(i.id)!, ...this.ghosts(i, t)])));
+    }
+    return { items, groups, trails };
   }
 
   merge(g: MergeGroup, polys: Poly[]): Poly[] {

@@ -59,7 +59,7 @@ export interface BounceState { objects: BallObj[]; sel: string | null; selBounce
 // ───────── Shapes ─────────
 export interface PathData { v: Vec[]; i: Vec[]; o: Vec[]; closed: boolean }
 export interface ShapeKey { id: string; t: number; path: PathData; x: number; y: number; rot: number; sx: number; sy: number; ease: Ease }
-export type BehaviorType = 'jiggle' | 'breathe' | 'noise' | 'wave' | 'orbit' | 'drift' | 'spin' | 'pulse';
+export type BehaviorType = 'jiggle' | 'breathe' | 'noise' | 'wave' | 'orbit' | 'drift' | 'spin' | 'pulse' | 'melt' | 'trail';
 export interface Behavior { id: string; type: BehaviorType; on: boolean; p: Record<string, number> }
 export interface ShapeItem {
   id: string;

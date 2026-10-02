@@ -40,7 +40,8 @@ function canBeSparse(it: ShapeItem) {
 }
 
 function sparseLayer(it: ShapeItem): ShapeLayerExport {
-  const maxPts = 48;
+  // detailed outlines (traced letters, logos) keep more vertices
+  const maxPts = Math.min(260, Math.max(48, Math.round(it.points * 0.6)));
   const t: number[] = [], paths: PathData[] = [];
   const xf = { t, pos: [] as Vec[], rot: [] as number[], scale: [] as Vec[], ease: [] as (Ease | null)[] };
   let prev: Poly | null = null;
@@ -74,14 +75,22 @@ export function buildShapesPayload(state: { shapes: ShapesState; comp: Comp }, m
     if (mode === 'auto' && canBeSparse(it)) layers.push(sparseLayer(it));
     else bakedItems.push(it);
   }
-  // baked loose shapes
-  for (const it of bakedItems) {
+  // baked loose shapes (a gooey trail changes its outline count, so it goes through slots like a group)
+  for (const it of bakedItems.filter((i) => i.behaviors.some((b) => b.type === 'trail' && b.on))) {
+    const perFrame: Poly[][] = [];
+    for (let f = 0; f <= frames; f++) {
+      const p = engine.item(it, f / fps);
+      perFrame.push(p ? (engine.trailLoops(it, p, f / fps) ?? [p]).map((l) => resample(l, 72)) : []);
+    }
+    layers.push({ name: it.name, color: hexToRgb(it.color), stroke: null, strokeW: 0, opacity: it.opacity, kind: 'baked', paths: loopsToSlots(perFrame, perFrame.map((_, f) => f / fps)) });
+  }
+  for (const it of bakedItems.filter((i) => !i.behaviors.some((b) => b.type === 'trail' && b.on))) {
     const t: number[] = [], v: PathData[] = [];
     let prev: Poly | null = null;
     for (let f = 0; f <= frames; f++) {
       const p = engine.item(it, f / fps);
       if (!p) continue;
-      let poly = decimate(p, 64);
+      let poly = decimate(p, Math.min(260, Math.max(64, Math.round(it.points * 0.6))));
       if (prev && prev.length === poly.length) poly = align(prev, poly);
       prev = poly;
       t.push(f / fps);
@@ -97,7 +106,7 @@ export function buildShapesPayload(state: { shapes: ShapesState; comp: Comp }, m
     const N = 72;
     const perFrame: Poly[][] = [];
     for (let f = 0; f <= frames; f++) {
-      const polys = members.map((m) => engine.item(m, f / fps)).filter(Boolean) as Poly[];
+      const polys = members.flatMap((m) => { const p = engine.item(m, f / fps); return p ? [p, ...engine.ghosts(m, f / fps)] : []; });
       perFrame.push(engine.merge(g, polys).map((l) => resample(l, N)));
     }
     const paths = loopsToSlots(perFrame, perFrame.map((_, f) => f / fps));
