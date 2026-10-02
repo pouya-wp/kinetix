@@ -65,3 +65,14 @@ registerMock('camClearKeys', () => { mockPose.keys = []; return true; });
 registerMock('camSetTime', (p: any) => { mockPose.t = p.t; return p.t; });
 registerMock('camDOF', () => true);
 registerMock('camSpread', () => ({ layers: 3 }));
+registerMock('sfxSample', () => {
+  const fps = 30, n = 120;
+  const ball = Array.from({ length: n }, (_, f) => { const t = f / fps; const y = t < 1 ? 200 + 700 * t * t : 900 - Math.abs(Math.sin((t - 1) * 3)) * 250 * Math.exp(-(t - 1) * 1.5); return [400 + t * 200, Math.min(900, y)]; });
+  const sc = Array.from({ length: n }, (_, f) => (f < 45 ? 0 : Math.min(100, (f - 45) * 12)));
+  const op = Array.from({ length: n }, (_, f) => (f < 60 ? 0 : Math.min(100, (f - 60) * 20)));
+  return { fps, t0: 0, end: 4, comp: { w: 1920, h: 1080 }, layers: [
+    { name: 'Ball', index: 1, inPoint: 0, outPoint: 4, size: [120, 120], pos: ball, textKeys: [], pathKeys: [], markers: [] },
+    { name: 'Badge', index: 2, inPoint: 0, outPoint: 4, size: [300, 300], scale: sc, textKeys: [], pathKeys: [], markers: [] },
+    { name: 'Title', index: 3, inPoint: 0, outPoint: 4, size: [800, 120], op, textKeys: [2.4, 2.5, 2.6], pathKeys: [], markers: [] },
+  ] };
+});

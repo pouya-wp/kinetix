@@ -112,6 +112,9 @@
     comp.openInViewer();
     var ev = call('sfxScan', { markers: true, keys: true, inout: true, scope: 'all' });
     check('auto-sfx finds camera move markers', ev && ev.length > 0, ev ? ev.length + ' events' : '');
+    var smp = call('sfxSample', { scope: 'all', workArea: false });
+    var withPos = 0; for (var sl = 0; sl < smp.layers.length; sl++) if (smp.layers[sl].pos || smp.layers[sl].op || smp.layers[sl].scale) withPos++;
+    check('motion sampled for animated layers', withPos >= 2, withPos + ' of ' + smp.layers.length + ' layers, ' + (smp.layers[0] && smp.layers[0].pos ? smp.layers[0].pos.length : 0) + ' frames');
 
     app.project.save(new File(root + 'scripts/out/kx-test-phase2.aep'));
     log.push('saved project');

@@ -2187,3 +2187,76 @@ KX.camSpread = function (p) {
   app.endUndoGroup();
   return { layers: L.length };
 };
+
+// --------- Auto-SFX v2: per-frame motion sampling ---------
+KX._animated = function (p) { try { return p.numKeys > 0 || (p.expressionEnabled && p.expression !== ''); } catch (e) { return false; } };
+
+KX._pathKeyTimes = function (layer) {
+  var times = {}, out = [];
+  var walk = function (g) {
+    for (var i = 1; i <= g.numProperties; i++) {
+      var p = g.property(i);
+      if (p.propertyType === PropertyType.PROPERTY) {
+        if (p.matchName === 'ADBE Vector Shape' && p.numKeys > 1) for (var k = 1; k <= p.numKeys; k++) times[Math.round(p.keyTime(k) * 1000) / 1000] = 1;
+      } else walk(p);
+    }
+  };
+  try { walk(KX._contents(layer)); } catch (e) {}
+  for (var t in times) if (times.hasOwnProperty(t)) out.push(parseFloat(t));
+  out.sort(function (a, b) { return a - b; });
+  return out;
+};
+
+KX.sfxSample = function (p) {
+  var comp = KX._comp(null, false);
+  var fps = comp.frameRate, t0 = p.workArea ? comp.workAreaStart : 0;
+  var t1 = p.workArea ? comp.workAreaStart + comp.workAreaDuration : comp.duration;
+  var n = Math.min(2400, Math.ceil((t1 - t0) * fps) + 1);
+  var src = [];
+  if (p.scope === 'selected') src = comp.selectedLayers; else for (var i = 1; i <= comp.numLayers; i++) src.push(comp.layer(i));
+  var out = [];
+  for (var s = 0; s < src.length; s++) {
+    var L = src[s];
+    if (L instanceof CameraLayer || L instanceof LightLayer) continue;
+    if (!L.hasVideo || !L.enabled || L.guideLayer || L.adjustmentLayer) {
+      // camera rigs still carry move markers
+      if (!(L.comment === 'kx-rig')) continue;
+    }
+    var rec = { name: L.name, index: L.index, inPoint: L.inPoint, outPoint: L.outPoint, size: [100, 100], textKeys: [], pathKeys: [], markers: [] };
+    try { var r = L.sourceRectAtTime(comp.time, false), sc0 = L.property('ADBE Transform Group').property('ADBE Scale').value; rec.size = [r.width * Math.abs(sc0[0]) / 100, r.height * Math.abs(sc0[1]) / 100]; } catch (e0) {}
+    var tf = L.property('ADBE Transform Group');
+    var pos = tf.property('ADBE Position'), sep = pos.dimensionsSeparated;
+    var px = sep ? tf.property('ADBE Position_0') : pos, py = sep ? tf.property('ADBE Position_1') : null;
+    var posAnim = KX._animated(px) || (py && KX._animated(py)) || (L.parent && KX._animated(L.parent.property('ADBE Transform Group').property('ADBE Position')));
+    var scl = tf.property('ADBE Scale'), rot = tf.property('ADBE Rotate Z'), op = tf.property('ADBE Opacity');
+    var scAnim = KX._animated(scl), rtAnim = KX._animated(rot), opAnim = KX._animated(op);
+    if (posAnim || scAnim || rtAnim || opAnim) {
+      var P = [], SC = [], RT = [], OP = [];
+      var par = L.parent ? L.parent.property('ADBE Transform Group').property('ADBE Position') : null;
+      for (var f = 0; f < n; f++) {
+        var t = t0 + f / fps;
+        if (posAnim) {
+          var v = sep ? [px.valueAtTime(t, false), py.valueAtTime(t, false)] : pos.valueAtTime(t, false);
+          if (par) { var pv = par.valueAtTime(t, false); v = [v[0] + pv[0], v[1] + pv[1]]; }
+          P.push([Math.round(v[0] * 10) / 10, Math.round(v[1] * 10) / 10]);
+        }
+        if (scAnim) { var sv = scl.valueAtTime(t, false); SC.push(Math.round((Math.abs(sv[0]) + Math.abs(sv[1])) / 2 * 10) / 10); }
+        if (rtAnim) RT.push(Math.round(rot.valueAtTime(t, false) * 10) / 10);
+        if (opAnim) OP.push(Math.round(op.valueAtTime(t, false)));
+      }
+      if (posAnim) rec.pos = P;
+      if (scAnim) rec.scale = SC;
+      if (rtAnim) rec.rot = RT;
+      if (opAnim) rec.op = OP;
+    }
+    if (L instanceof TextLayer) {
+      var st = L.property('ADBE Text Properties').property('ADBE Text Document');
+      for (var k = 1; k <= st.numKeys; k++) rec.textKeys.push(st.keyTime(k));
+    }
+    if (L instanceof ShapeLayer) rec.pathKeys = KX._pathKeyTimes(L);
+    var mk = L.property('ADBE Marker');
+    for (var m = 1; m <= mk.numKeys; m++) rec.markers.push({ t: mk.keyTime(m), dur: mk.keyValue(m).duration, comment: String(mk.keyValue(m).comment) });
+    out.push(rec);
+  }
+  return { fps: fps, t0: t0, end: t1, comp: { w: comp.width, h: comp.height }, layers: out };
+};
