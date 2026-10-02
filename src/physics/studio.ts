@@ -3,7 +3,7 @@ import { Page, Tiles, Group } from '../core/page';
 import { call, inAE } from '../core/ae-bridge';
 import { registerCommands } from '../core/commands';
 import { simplifyKeys } from '../core/math';
-import { simulate, RECIPES, type PhysLayer, type PhysParams, type SimResult } from './sim';
+import { simulate, previewPieces, RECIPES, type PhysLayer, type PhysParams, type SimResult } from './sim';
 import type { Studio } from '../main';
 
 const LS = 'kinetix.physics';
@@ -44,8 +44,8 @@ export class PhysicsStudio implements Studio {
       Section('Layers', [
         Btn('Import selected layers', () => this.importLayers(), { variant: 'primary', block: true, icon: 'import' }),
         this.list,
-        Seg([{ value: 'auto', label: 'Auto' }, { value: 'box', label: 'Boxes' }, { value: 'circle', label: 'Circles' }], () => p.shape, (v) => set('shape')(v)),
-        h('div', { class: 'hint' }, 'Select layers in your comp (2D or 3D) and import them. Their size and rotation become physical bodies.'),
+        Seg([{ value: 'auto', label: 'Exact shape' }, { value: 'box', label: 'Boxes' }, { value: 'circle', label: 'Circles' }], () => p.shape, (v) => set('shape')(v)),
+        h('div', { class: 'hint' }, 'Shape layers collide with their exact outline — concave and custom paths too — and morphing shapes keep colliding correctly as their path changes. Text and footage use their bounds.'),
       ], { color: 'var(--lime)' }),
     ];
     const main = [
@@ -86,8 +86,15 @@ export class PhysicsStudio implements Studio {
 
   private demo() {
     const L: PhysLayer[] = [];
-    const sizes = [[260, 260], [180, 180], [420, 120], [140, 140], [300, 90], [220, 220], [160, 300]];
-    sizes.forEach(([w, hh], i) => L.push({ index: i + 1, name: ['Logo', 'Ball', 'Title', 'Dot', 'Button', 'Card', 'Phone'][i], cx: 420 + i * 180, cy: 200 + (i % 3) * 120, w, h: hh, rot: (i % 2) * 15, offX: 0, offY: 0, pos: [0, 0], kind: i === 1 || i === 3 ? 'shape' : 'footage' }));
+    const sizes = [[260, 260], [180, 180], [420, 120], [140, 140]];
+    sizes.forEach(([w, hh], i) => L.push({ index: i + 1, name: ['Logo', 'Ball', 'Title', 'Dot'][i], cx: 420 + i * 200, cy: 200 + (i % 3) * 120, w, h: hh, rot: (i % 2) * 15, offX: 0, offY: 0, pos: [420 + i * 200, 200 + (i % 3) * 120], kind: i === 1 || i === 3 ? 'shape' : 'footage' }));
+    // concave custom shapes (exact outlines) — an L, a star and a shape that morphs star → circle
+    const star = (r1: number, r2: number, n: number) => Array.from({ length: n * 2 }, (_, k) => { const a = -Math.PI / 2 + (k / (n * 2)) * Math.PI * 2, r = k % 2 ? r2 : r1; return [Math.cos(a) * r, Math.sin(a) * r]; });
+    const circle = (r: number) => Array.from({ length: 40 }, (_, k) => [Math.cos((k / 40) * Math.PI * 2) * r, Math.sin((k / 40) * Math.PI * 2) * r]);
+    const lshape = [[-110, -110], [-30, -110], [-30, 50], [110, 50], [110, 110], [-110, 110]];
+    const morph = Array.from({ length: 121 }, (_, f) => { const u = Math.min(1, f / 60), A = star(120, 50, 5), C = circle(95); const s2 = A.map((q, k) => { const c = C[Math.round((k / A.length) * C.length) % C.length]; return [q[0] + (c[0] - q[0]) * u, q[1] + (c[1] - q[1]) * u]; }); return [s2]; });
+    const ex = (name: string, x: number, y: number, frames: number[][][][], morphing = false): PhysLayer => ({ index: L.length + 1, name, cx: x, cy: y, w: 240, h: 240, rot: 0, offX: 0, offY: 0, pos: [x, y], kind: 'shape', outlines: frames, anchor: [0, 0], scale: [100, 100], morphing });
+    L.push(ex('L-shape', 1300, 220, [[lshape]]), ex('Star', 1550, 160, [[star(130, 55, 5)]]), ex('Star→Circle', 1020, 120, morph, true));
     this.layers = L;
     this.renderList();
     this.run();
@@ -95,19 +102,19 @@ export class PhysicsStudio implements Studio {
 
   private async importLayers() {
     try {
-      const r = await call<{ comp: { w: number; h: number; fps: number; time: number }; layers: PhysLayer[] }>('physScene');
+      const r = await call<{ comp: { w: number; h: number; fps: number; time: number }; layers: PhysLayer[] }>('physScene2', { duration: this.p.duration });
       if (!r.layers.length) { toast('Select some layers first', 'info'); return; }
       this.comp = r.comp;
       this.layers = r.layers;
       this.renderList();
       this.run(true);
-      toast(`Imported ${r.layers.length} layer(s)`);
+      toast(`Imported ${r.layers.length} layer(s)` + (r.layers.some((l) => l.morphing) ? ' · morphing outlines tracked' : ''));
     } catch (e: any) { toast(e.message, 'err', 6000); }
   }
 
   private renderList() {
     this.list.innerHTML = '';
-    this.layers.forEach((l, i) => this.list.appendChild(h('div', { class: 'item' }, h('span', { class: 'sw-dot', style: { background: COLORS[i % COLORS.length] } }), h('span', { class: 'name' }, l.name), h('span', { class: 'meta' }, `${Math.round(l.w)}×${Math.round(l.h)}`))));
+    this.layers.forEach((l, i) => this.list.appendChild(h('div', { class: 'item' }, h('span', { class: 'sw-dot', style: { background: COLORS[i % COLORS.length] } }), h('span', { class: 'name' }, l.name), h('span', { class: 'meta' }, l.morphing ? 'morph' : l.outlines ? 'exact' : `${Math.round(l.w)}×${Math.round(l.h)}`))));
     if (!this.layers.length) this.list.appendChild(h('div', { class: 'empty' }, 'No layers imported'));
   }
 
@@ -148,11 +155,23 @@ export class PhysicsStudio implements Studio {
     if (this.p.floor) { g.fillStyle = 'rgba(209,254,23,.15)'; g.fillRect(0, this.comp.h - this.p.floorOffset, this.comp.w, 6); }
     const fr = this.res?.frames[Math.min(this.frame, (this.res?.frames.length ?? 1) - 1)];
     this.layers.forEach((l, i) => {
-      const x = fr ? fr.x[i] : l.cx, y = fr ? fr.y[i] : l.cy, a = fr ? fr.a[i] : (l.rot * Math.PI) / 180;
+      const ax = fr ? fr.x[i] : l.pos[0], ay = fr ? fr.y[i] : l.pos[1], a = fr ? fr.a[i] : (l.rot * Math.PI) / 180;
+      const col = COLORS[i % COLORS.length];
+      const pieces = this.p.shape === 'auto' ? previewPieces(l, this.frame, ax, ay, a) : null;
+      g.fillStyle = col + 'cc';
+      if (pieces) {
+        g.beginPath();
+        for (const pc of pieces) { pc.forEach((v, k) => (k ? g.lineTo(v.x, v.y) : g.moveTo(v.x, v.y))); g.closePath(); }
+        g.fill();
+        g.strokeStyle = 'rgba(0,0,0,.25)'; g.lineWidth = 2; g.stroke();
+        return;
+      }
+      // centre = anchor + rotated (centre - anchor) offset
+      const d = a - (l.rot * Math.PI) / 180, c = Math.cos(d), sn = Math.sin(d);
+      const x = ax + l.offX * c - l.offY * sn, y = ay + l.offX * sn + l.offY * c;
       g.save();
       g.translate(x, y); g.rotate(a);
       const circle = this.p.shape === 'circle' || (this.p.shape === 'auto' && Math.abs(l.w - l.h) < Math.min(l.w, l.h) * 0.12 && l.kind !== 'text');
-      g.fillStyle = COLORS[i % COLORS.length] + 'cc';
       g.beginPath();
       if (circle) g.arc(0, 0, Math.min(l.w, l.h) / 2, 0, 7); else g.roundRect(-l.w / 2, -l.h / 2, l.w, l.h, 12);
       g.fill();
@@ -169,14 +188,8 @@ export class PhysicsStudio implements Studio {
     const { frames, hits, fps } = this.res;
     const t: number[] = frames.map((_, f) => f / fps);
     const items = this.layers.map((l, i) => {
-      const a0 = (l.rot * Math.PI) / 180;
       const pos: number[][] = [], rot: number[][] = [];
-      frames.forEach((fr) => {
-        const d = fr.a[i] - a0, c = Math.cos(d), s = Math.sin(d);
-        // layer position = body centre minus the (rotated) centre offset
-        pos.push([fr.x[i] - (l.offX * c - l.offY * s), fr.y[i] - (l.offX * s + l.offY * c)]);
-        rot.push([l.rot + (d * 180) / Math.PI]);
-      });
+      frames.forEach((fr) => { pos.push([fr.x[i], fr.y[i]]); rot.push([(fr.a[i] * 180) / Math.PI]); });
       const pi = simplifyKeys(t, pos, [0.3, 0.3]), ri = simplifyKeys(t, rot, [0.25]);
       return { index: l.index, pos: { t: pi.map((k) => t[k]), v: pi.map((k) => pos[k]) }, rot: { t: ri.map((k) => t[k]), v: ri.map((k) => rot[k][0]) } };
     });

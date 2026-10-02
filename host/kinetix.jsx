@@ -1923,3 +1923,107 @@ KX.gradApply = function (p) {
   app.endUndoGroup();
   return { layers: n };
 };
+
+// --------- Shape-layer outlines for physics (exact, per frame) ---------
+KX._mMul = function (a, b) { return [a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1], a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3], a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]]; };
+KX._mApply = function (m, p) { return [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]]; };
+KX._groupMatrix = function (xf, t) {
+  var an = xf.property('ADBE Vector Anchor').valueAtTime(t, false), ps = xf.property('ADBE Vector Position').valueAtTime(t, false);
+  var sc = xf.property('ADBE Vector Scale').valueAtTime(t, false), r = xf.property('ADBE Vector Rotation').valueAtTime(t, false) * Math.PI / 180;
+  var c = Math.cos(r), s = Math.sin(r), sx = sc[0] / 100, sy = sc[1] / 100;
+  // T(pos) * R * S * T(-anchor)
+  var m = [c * sx, s * sx, -s * sy, c * sy, 0, 0];
+  m[4] = ps[0] - (m[0] * an[0] + m[2] * an[1]);
+  m[5] = ps[1] - (m[1] * an[0] + m[3] * an[1]);
+  return m;
+};
+
+KX._bez = function (s, steps) {
+  var out = [], v = s.vertices, ii = s.inTangents, oo = s.outTangents, n = v.length;
+  if (!n) return out;
+  var segs = s.closed ? n : n - 1;
+  for (var k = 0; k < segs; k++) {
+    var a = v[k], b = v[(k + 1) % n], c1 = [a[0] + oo[k][0], a[1] + oo[k][1]], c2 = [b[0] + ii[(k + 1) % n][0], b[1] + ii[(k + 1) % n][1]];
+    var straight = !oo[k][0] && !oo[k][1] && !ii[(k + 1) % n][0] && !ii[(k + 1) % n][1];
+    var st = straight ? 1 : steps;
+    for (var j = 0; j < st; j++) {
+      var t = j / st, u = 1 - t;
+      out.push([u * u * u * a[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t * t * t * b[0], u * u * u * a[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t * t * t * b[1]]);
+    }
+  }
+  return out;
+};
+
+/** All filled outlines of a shape layer at time t, in layer space. */
+KX._shapeOutlines = function (layer, t) {
+  var polys = [];
+  var walk = function (vectors, m) {
+    for (var i = 1; i <= vectors.numProperties; i++) {
+      var p = vectors.property(i), pts = null;
+      try { if (!p.enabled) continue; } catch (e0) {}
+      var mn = p.matchName;
+      if (mn === 'ADBE Vector Group') {
+        walk(p.property('ADBE Vectors Group'), KX._mMul(m, KX._groupMatrix(p.property('ADBE Vector Transform Group'), t)));
+        continue;
+      }
+      if (mn === 'ADBE Vector Shape - Group') pts = KX._bez(p.property('ADBE Vector Shape').valueAtTime(t, false), 8);
+      else if (mn === 'ADBE Vector Shape - Rect') {
+        var sz = p.property('ADBE Vector Rect Size').valueAtTime(t, false), ps = p.property('ADBE Vector Rect Position').valueAtTime(t, false);
+        var rr = Math.min(p.property('ADBE Vector Rect Roundness').valueAtTime(t, false), sz[0] / 2, sz[1] / 2), hw = sz[0] / 2, hh = sz[1] / 2;
+        pts = [];
+        var cs = [[hw - rr, -hh + rr, -90], [hw - rr, hh - rr, 0], [-hw + rr, hh - rr, 90], [-hw + rr, -hh + rr, 180]];
+        for (var q = 0; q < 4; q++) for (var a = 0; a <= 6; a++) { var ang = (cs[q][2] + a * 15) * Math.PI / 180; pts.push([ps[0] + cs[q][0] + Math.cos(ang) * rr, ps[1] + cs[q][1] + Math.sin(ang) * rr]); }
+      } else if (mn === 'ADBE Vector Shape - Ellipse') {
+        var es = p.property('ADBE Vector Ellipse Size').valueAtTime(t, false), ep = p.property('ADBE Vector Ellipse Position').valueAtTime(t, false);
+        pts = [];
+        for (var e = 0; e < 32; e++) { var ea = e / 32 * Math.PI * 2; pts.push([ep[0] + Math.cos(ea) * es[0] / 2, ep[1] + Math.sin(ea) * es[1] / 2]); }
+      } else if (mn === 'ADBE Vector Shape - Star') {
+        var type = p.property('ADBE Vector Star Type').valueAtTime(t, false), np = Math.max(3, Math.round(p.property('ADBE Vector Star Points').valueAtTime(t, false)));
+        var sp = p.property('ADBE Vector Star Position').valueAtTime(t, false), srot = p.property('ADBE Vector Star Rotation').valueAtTime(t, false) * Math.PI / 180;
+        var ro = p.property('ADBE Vector Star Outer Radius').valueAtTime(t, false), ri = type === 1 ? p.property('ADBE Vector Star Inner Radius').valueAtTime(t, false) : ro;
+        var cnt = type === 1 ? np * 2 : np;
+        pts = [];
+        for (var s2 = 0; s2 < cnt; s2++) { var sa = -Math.PI / 2 + srot + s2 / cnt * Math.PI * 2, rad = (type === 1 && s2 % 2) ? ri : ro; pts.push([sp[0] + Math.cos(sa) * rad, sp[1] + Math.sin(sa) * rad]); }
+      }
+      if (pts && pts.length > 2) {
+        var w = [];
+        for (var z = 0; z < pts.length; z++) { var r = KX._mApply(m, pts[z]); w.push([Math.round(r[0] * 10) / 10, Math.round(r[1] * 10) / 10]); }
+        polys.push(w);
+      }
+    }
+  };
+  walk(KX._contents(layer), [1, 0, 0, 1, 0, 0]);
+  return polys;
+};
+
+/** Does anything inside the shape layer animate (keys or expressions)? */
+KX._shapeAnimated = function (layer) {
+  var found = false;
+  var walk = function (g) {
+    for (var i = 1; i <= g.numProperties && !found; i++) {
+      var p = g.property(i);
+      if (p.propertyType === PropertyType.PROPERTY) { try { if (p.numKeys > 0 || (p.expressionEnabled && p.expression)) found = true; } catch (e) {} }
+      else walk(p);
+    }
+  };
+  walk(KX._contents(layer));
+  return found;
+};
+
+/** physScene with exact outlines: shape layers get their real (and morphing) geometry. */
+KX.physScene2 = function (p) {
+  var base = KX.physScene();
+  var comp = KX._comp(null, false), fps = comp.frameRate, n = Math.min(900, Math.ceil(p.duration * fps) + 1);
+  for (var i = 0; i < base.layers.length; i++) {
+    var B = base.layers[i], L = comp.layer(B.index);
+    var tf = L.property('ADBE Transform Group');
+    B.anchor = tf.property('ADBE Anchor Point').valueAtTime(comp.time, false);
+    B.scale = tf.property('ADBE Scale').valueAtTime(comp.time, false);
+    if (!(L instanceof ShapeLayer)) continue;
+    var frames = [];
+    if (KX._shapeAnimated(L)) { for (var f = 0; f < n; f++) frames.push(KX._shapeOutlines(L, comp.time + f / fps)); B.morphing = true; }
+    else frames.push(KX._shapeOutlines(L, comp.time));
+    B.outlines = frames;
+  }
+  return base;
+};
