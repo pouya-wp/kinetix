@@ -40,25 +40,38 @@ export class RenderStudio implements Studio {
       this.engineSection(),
       this.reframeSection(),
     );
-    const main = h('div', { style: { flex: '1', minWidth: '0', overflow: 'auto', padding: '22px 26px 40px' } },
-      h('div', { class: 'hstack', style: { marginBottom: '18px' } },
+    // the render bar lives at the top of the main column so it is always visible
+    const what = h('div', { class: 'grow' });
+    onRefresh(what, () => {
+      const ids = this.multi ? R().batch : [R().preset];
+      const names = ids.map((id) => PRESETS.find((p) => p.id === id)?.label ?? id);
+      const eng = R().engine === 'ffmpeg' ? (this.ffmpegPath ? 'FFmpeg' : 'AE H.264 (FFmpeg not found)') : R().engine === 'ame' ? 'Media Encoder' : 'AE H.264';
+      what.innerHTML = '';
+      what.append(h('div', { style: { font: '700 16px var(--font-display)', textTransform: 'uppercase' } }, names.length > 1 ? `${names.length} presets` : names[0] ?? '—'),
+        h('div', { class: 'hint' }, `${S().comp.name} · ${eng}${names.length > 1 ? ' · ' + names.join(', ') : ''}`));
+    });
+    const renderBar = h('div', { class: 'panel-card render-bar' },
+      h('div', { class: 'hstack', style: { flexWrap: 'wrap' } }, what,
+        Btn('Render now', () => this.renderAll(), { variant: 'primary', size: 'lg', icon: 'render' })),
+      h('div', { class: 'progress' }, this.bar),
+      h('div', { class: 'hstack' }, h('div', { class: 'grow' }, this.status),
+        Btn('Cancel', () => this.cancel(), { size: 'sm', variant: 'danger' }),
+        Btn('Open folder', () => this.openFolder(), { size: 'sm', icon: 'folder' })),
+      h('details', null, h('summary', { class: 'hint', style: { cursor: 'pointer' } }, 'Log'), this.logEl),
+    );
+    const main = h('div', { class: 'page-main' },
+      h('div', { class: 'page-head' },
         h('div', { class: 'grow' },
-          h('div', { style: { font: '700 26px/1.1 var(--font-display)', textTransform: 'uppercase', letterSpacing: '.02em' } }, 'Export for every platform'),
-          h('div', { class: 'muted', style: { marginTop: '6px' } }, 'Pick a destination, tweak if you like, and render in one click.'),
+          h('div', { class: 'page-title' }, 'Export for every platform'),
+          h('div', { class: 'page-sub' }, 'Pick a destination, tweak if you like, and render in one click.'),
         ),
         Toggle('Batch mode', () => this.multi, (v) => { this.multi = v; if (v && !R().batch.length) setR((r) => { r.batch = [r.preset]; }); this.renderCards(); refreshAll(); }),
       ),
+      renderBar,
       this.cards,
     );
     const right = h('div', { class: 'side right', style: { width: '330px' } },
       Section('Settings', [this.detail], { color: 'var(--lime)' }),
-      Section('Render', [
-        Btn('Render now', () => this.renderAll(), { variant: 'primary', size: 'lg', block: true, icon: 'render' }),
-        h('div', { class: 'progress' }, this.bar),
-        this.status,
-        h('div', { class: 'row' }, Btn('Cancel', () => this.cancel(), { size: 'sm', variant: 'danger' }), Btn('Open folder', () => this.openFolder(), { size: 'sm', icon: 'folder' })),
-        this.logEl,
-      ], { color: 'var(--lime)' }),
     );
     this.el = h('div', { class: 'view' }, side, main, right);
     this.renderCards();
@@ -302,7 +315,16 @@ export class RenderStudio implements Studio {
       return;
     }
     if (!this.ffmpegPath) this.detectFFmpeg();
-    if (!this.ffmpegPath) throw new Error('FFmpeg not found. Click “Download FFmpeg”, locate it, or switch the engine to AE H.264.');
+    if (!this.ffmpegPath) {
+      // no FFmpeg: still render, with After Effects' own H.264 encoder
+      this.log('FFmpeg not found — using After Effects H.264 instead (download FFmpeg for exact bitrates).');
+      this.progress(base + span * 0.1, 'Rendering in After Effects (AE is busy until it finishes)…');
+      const res = await call<{ path: string }>('renderNative', { out, reframe, useWorkArea: R().useWorkArea, mbps: r.mbps, fps: r.fps });
+      this.lastOut = res.path;
+      this.progress(base + span, 'Rendered.');
+      this.log('✓ ' + res.path);
+      return;
+    }
     const req = nodeRequire()!;
     const fs = req('fs'), path = req('path');
     fs.mkdirSync(dir, { recursive: true });
