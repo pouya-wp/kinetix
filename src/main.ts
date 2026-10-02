@@ -21,6 +21,7 @@ import { TypeStudio } from './type/studio';
 import { PhysicsStudio } from './physics/studio';
 import { SoundStudio } from './sound/studio';
 import { StyleStudio } from './style/studio';
+import { ColorStudio } from './color/studio';
 import { BrandStudio } from './brand/studio';
 
 export interface Studio {
@@ -43,6 +44,7 @@ const SECTIONS: SectionDef[] = [
   { id: 'bounce', label: 'Bounce', title: 'Bounce', icon: 'bounce', make: () => new BounceStudio() },
   { id: 'shapes', label: 'Shapes', title: 'Shapes & Morph', icon: 'shapes', make: () => new ShapesStudio() },
   { id: 'text', label: 'Text Morph', title: 'Text Morph', icon: 'text', make: () => new TextStudio(), sep: true },
+  { id: 'color', label: 'Color', title: 'Color Grade', icon: 'color', make: () => new ColorStudio() },
   { id: 'style', label: 'Style', title: 'Styles & Gradients', icon: 'style', make: () => new StyleStudio() },
   { id: 'sound', label: 'Sound', title: 'Sound Lab', icon: 'sound', make: () => new SoundStudio() },
   { id: 'brand', label: 'Brand', title: 'Brand Kit', icon: 'brand', make: () => new BrandStudio(), sep: true },

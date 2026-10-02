@@ -31,6 +31,10 @@ export const HELP: Record<string, { what: string; steps: string[]; tips?: string
     what: 'Many subtitle layers morphed into one another, with an animated text box.',
     steps: ['Select your subtitle text layers in AE and Analyze.', 'Pick a morph style and a box style, set the font.', 'Build — the precomp holds the text; the box sits outside so you can make it an adjustment layer.'],
   },
+  color: {
+    what: 'One-click colour grades for the whole video, built from native AE effects on one adjustment layer.',
+    steps: ['Pick a look — tiles show it on a sample image (or load a still of your own video).', 'Adjust strength, warmth, contrast, saturation and fade.', 'Apply — a “KX Color Grade” adjustment layer goes on top of the comp. Apply again to update it.'],
+  },
   style: {
     what: 'Glow, bevel, shadows and 500+ gradients for any layer.',
     steps: ['Select layers in AE.', 'Click a style or gradient — it is applied with live, editable effects.'],

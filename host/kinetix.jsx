@@ -2533,3 +2533,52 @@ KX.physLinks = function (p) {
   app.endUndoGroup();
   return { layers: n };
 };
+
+// --------- Color grading: one adjustment layer on top; its opacity is the look's strength ---------
+KX._gradeLayer = function (comp, create) {
+  for (var i = 1; i <= comp.numLayers; i++) if (comp.layer(i).comment === 'kx-grade') return comp.layer(i);
+  if (!create) return null;
+  var L = comp.layers.addSolid([1, 1, 1], 'KX Color Grade', comp.width, comp.height, comp.pixelAspect, comp.duration);
+  L.adjustmentLayer = true;
+  L.comment = 'kx-grade';
+  L.label = 9;
+  L.moveToBeginning();
+  return L;
+};
+KX.gradeApply = function (p) {
+  var comp = KX._comp(null, false);
+  app.beginUndoGroup('Kinetix Color ' + p.name);
+  var targets = [], missing = {};
+  if (p.target === 'selected') {
+    for (var s = 0; s < comp.selectedLayers.length; s++) targets.push(comp.selectedLayers[s]);
+    if (!targets.length) { app.endUndoGroup(); throw new Error('Select the layers to grade (or grade the whole comp).'); }
+  } else targets.push(KX._gradeLayer(comp, true));
+  for (var t = 0; t < targets.length; t++) {
+    var L = targets[t], fx = L.property('ADBE Effect Parade');
+    for (var k = fx.numProperties; k >= 1; k--) if (fx.property(k).name.indexOf('KX Grade') === 0) fx.property(k).remove();
+    for (var f = 0; f < p.fx.length; f++) {
+      var F = p.fx[f], got = KX._addFx(L, F.match);
+      if (!got) { missing[F.match[0]] = 1; continue; }
+      got.fx.name = F.name;
+      if (F.props) for (var key in F.props) if (F.props.hasOwnProperty(key)) { var pr = KX._fxProp(got.fx, key); if (pr) try { pr.setValue(F.props[key]); } catch (e1) {} }
+    }
+    if (p.target !== 'selected') L.property('ADBE Transform Group').property('ADBE Opacity').setValue(p.strength);
+  }
+  app.endUndoGroup();
+  var miss = [];
+  for (var m in missing) if (missing.hasOwnProperty(m)) miss.push(m);
+  return { layers: targets.length, missing: miss };
+};
+KX.gradeStrength = function (p) {
+  var comp = KX._comp(null, false), L = KX._gradeLayer(comp, false);
+  if (L) L.property('ADBE Transform Group').property('ADBE Opacity').setValue(p.strength);
+  return !!L;
+};
+KX.gradeRemove = function () {
+  var comp = KX._comp(null, false), L = KX._gradeLayer(comp, false);
+  if (!L) return false;
+  app.beginUndoGroup('Kinetix Remove Grade');
+  L.remove();
+  app.endUndoGroup();
+  return true;
+};

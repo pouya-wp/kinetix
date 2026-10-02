@@ -102,3 +102,7 @@ registerMock('sfxSample3', () => {
 });
 registerMock('sfxPlaceMix', (p: any) => ({ layers: p.files.length }));
 registerMock('selInfo', () => ({ comp: 'Preview Comp', layers: 2, text: 1, shape: 1, keys: 4, camera: false }));
+
+registerMock('gradeApply', (p: any) => ({ layers: 1, missing: [] }));
+registerMock('gradeStrength', () => true);
+registerMock('gradeRemove', () => true);
