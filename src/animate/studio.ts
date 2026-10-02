@@ -1,6 +1,6 @@
-import { h, Section, Slider, Seg, Btn, Field, Select, Toggle, toast, refreshAll, onRefresh, clear } from '../ui/kit';
+import { h, Slider, Btn, Field, Select, toast, refreshAll, clear, Chips } from '../ui/kit';
+import { Flow, Step, More, Tabs, Picks } from '../ui/flow';
 import { bakeSelected } from '../core/bake';
-import { Page, Tiles, Group } from '../core/page';
 import { call } from '../core/ae-bridge';
 import { registerCommands } from '../core/commands';
 import { EASE_LIBRARY, EASE_GROUPS, easeById, easeThumb, easeExprFn, easeFn, type EaseDef } from './eases';
@@ -11,41 +11,52 @@ import type { Studio } from '../main';
 type Tab = 'ease' | 'inout' | 'wiggle';
 const LS = 'kinetix.animate';
 
+// hand-picked starting points — the full libraries stay one click away under “More”
+const TOP_EASES: [string, string][] = [
+  ['easyEase', 'Smooth'], ['cinematic', 'Cinematic'], ['swift', 'Snappy'], ['glide', 'Glide'], ['mdEmph', 'Fast out'], ['overshoot', 'Overshoot'],
+  ['anticipate', 'Wind-up'], ['springDefault', 'Spring'], ['springBouncy', 'Bouncy'], ['elasticOut', 'Elastic'], ['bounceOut', 'Bounce'], ['slowMo', 'Slow-mo'],
+];
+const TOP_IN = ['fade', 'fade-up', 'pop', 'squash-pop', 'slide-up', 'zoom-in', 'blur-in', 'drop', 'rotate-in', 'flip-y', 'wipe-right', 'melt'];
+const TOP_OUT = ['fade', 'fade-down', 'zoom-out', 'pop', 'slide-down', 'blur-in', 'spin-in', 'melt', 'glitch', 'dissolve'];
+const PROPS = [{ value: 'position', label: 'Position' }, { value: 'scale', label: 'Scale' }, { value: 'rotation', label: 'Rotation' }, { value: 'opacity', label: 'Opacity' }];
+
 export class AnimateStudio implements Studio {
   id = 'animate';
   el: HTMLElement;
-  private tab: Tab = 'ease';
+  private tab: Tab = 'inout';
   private ease = 'easyEase';
-  private easeGroup = 'All';
-  private easeQuery = '';
+  private easeGroup = 'Design';
   private spring = { k: 12, z: 0.45 };
-  private favs = new Set<string>();
   private inId: string | null = 'pop';
   private outId: string | null = 'fade-down';
-  private pick: 'in' | 'out' = 'in';
   private inEase = 'overshoot';
   private outEase = 'cubicIn';
   private inDur = 0.6;
   private outDur = 0.45;
   private strength = 1;
-  private animGroup = 'All';
+  private allGroup = 'Basic';
+  private allFor: 'in' | 'out' = 'in';
   private wig = { id: 'smooth', prop: 'position', freq: 2, amp: 30, seed: 1, loop: 4 };
   private body: HTMLElement;
   private preview: HTMLCanvasElement;
+  private minis: { c: HTMLCanvasElement; draw: (g: CanvasRenderingContext2D, W: number, H: number, t: number) => void }[] = [];
   private raf = 0;
   private active = false;
 
   constructor() {
-    try { const s = JSON.parse(localStorage.getItem(LS) || '{}'); Object.assign(this, s.cfg ?? {}); this.favs = new Set(s.favs ?? []); } catch { /* */ }
-    this.body = h('div', { class: 'stack', style: { gap: '20px' } });
-    this.preview = h('canvas', { style: { width: '100%', height: '170px', display: 'block', borderRadius: '14px', background: 'var(--bg-deep)' } });
-    const tabs = Seg<Tab>([{ value: 'ease', label: 'Ease Library' }, { value: 'inout', label: 'In / Out' }, { value: 'wiggle', label: 'Wiggle & Loop' }], () => this.tab, (v) => { this.tab = v; this.render(); });
-    const page = Page({
-      title: 'Animate',
-      sub: 'Eases, entrance & exit animations and procedural motion — applied to whatever you select in After Effects.',
-      extra: h('div', { style: { width: '380px', maxWidth: '100%' } }, tabs),
-      main: [this.body],
-      right: [Section('Preview', [this.preview, h('div', { class: 'hint' }, 'Live preview of the current selection.')], { color: 'var(--lime)' }), this.inspector()],
+    try { const s = JSON.parse(localStorage.getItem(LS) || '{}'); Object.assign(this, s.cfg ?? {}); } catch { /* first run */ }
+    this.body = h('div', { class: 'stack', style: { gap: '16px' } });
+    this.preview = h('canvas', { style: { width: '100%', height: '120px', display: 'block', borderRadius: '14px', background: 'var(--bg-deep)' } });
+    const tabs = Tabs<Tab>([{ id: 'inout', label: 'Appear & disappear' }, { id: 'ease', label: 'Smooth keyframes' }, { id: 'wiggle', label: 'Shake & loop' }], () => this.tab, (v) => { this.tab = v; this.render(); });
+    const page = Flow({
+      title: 'Animate', sub: 'Give any layer an entrance and exit, make keyframes feel great, or add shake and loops — one click each.',
+      tabs, body: [this.preview, this.body],
+      action: {
+        label: 'Apply', icon: 'send',
+        need: () => (this.tab === 'ease' ? 'keys' : 'layers'),
+        run: () => (this.tab === 'ease' ? this.applyEase() : this.tab === 'inout' ? this.applyAnim() : this.applyWiggle()),
+        secondary: [Btn('Bake', () => bakeSelected(), { variant: 'ghost', title: 'Turn Kinetix animation on the selected layers into plain keyframes (faster renders)' })],
+      },
     });
     this.el = page.el;
     this.render();
@@ -63,13 +74,13 @@ export class AnimateStudio implements Studio {
   private save() {
     try {
       const cfg = { tab: this.tab, ease: this.ease, inId: this.inId, outId: this.outId, inEase: this.inEase, outEase: this.outEase, inDur: this.inDur, outDur: this.outDur, strength: this.strength, wig: this.wig, spring: this.spring };
-      localStorage.setItem(LS, JSON.stringify({ cfg, favs: [...this.favs] }));
-    } catch { /* */ }
+      localStorage.setItem(LS, JSON.stringify({ cfg }));
+    } catch { /* storage blocked */ }
   }
 
-  // ───────── pages ─────────
   private render() {
     clear(this.body);
+    this.minis = [];
     this.save();
     if (this.tab === 'ease') this.easePage();
     else if (this.tab === 'inout') this.inoutPage();
@@ -77,121 +88,124 @@ export class AnimateStudio implements Studio {
     refreshAll();
   }
 
-  private easePage() {
-    const search = h('input', { class: 'input', placeholder: `Search ${EASE_LIBRARY.length} eases…`, value: this.easeQuery, style: { fontFamily: 'var(--font-ui)' } }) as HTMLInputElement;
-    search.addEventListener('keydown', (e) => e.stopPropagation());
-    const gridBox = h('div');
-    const draw = () => {
-      clear(gridBox);
-      const q = this.easeQuery.toLowerCase();
-      const groups = this.easeGroup === 'Favorites' ? ['Favorites'] : this.easeGroup === 'All' ? EASE_GROUPS : [this.easeGroup];
-      for (const g of groups) {
-        const items = EASE_LIBRARY.filter((e) => (g === 'Favorites' ? this.favs.has(e.id) : e.group === g) && (!q || e.label.toLowerCase().includes(q)));
-        if (!items.length) continue;
-        const t = Tiles(items.map((e) => ({ id: e.id, label: e.label, sub: e.bezier ? 'keyframe' : 'expression' })), {
-          onPick: (x) => { this.ease = x.id; t.refresh(); refreshAll(); },
-          isOn: (x) => x.id === this.ease,
-          preview: (x) => easeThumb(easeById(x.id), 130, 56),
-          min: 132,
-        });
-        gridBox.appendChild(Group(g, [t.el]));
-      }
-    };
-    search.addEventListener('input', () => { this.easeQuery = search.value; draw(); });
-    const chips = h('div', { class: 'chips' }, ...['All', 'Favorites', ...EASE_GROUPS].map((g) => {
-      const b = h('button', { class: 'chip' + (g === this.easeGroup ? ' on' : '') }, g);
-      b.addEventListener('click', () => { this.easeGroup = g; this.render(); });
-      return b;
-    }));
-    draw();
-    this.body.append(
-      h('div', { class: 'panel-card' }, search, chips,
-        h('div', { class: 'row' },
-          Btn('Apply to selected keyframes', () => this.applyEase(), { variant: 'primary', icon: 'send' }),
-          Btn('Apply as expression', () => this.applyEase(true), { variant: 'soft' })),
-        h('div', { class: 'hint' }, 'Select keyframes in the timeline (2 or more on a property). Curve eases are written as native AE keyframe velocity; Elastic / Bounce / Spring become an expression that keeps your keyframes.')),
-      gridBox,
-    );
+  private mini(draw: (g: CanvasRenderingContext2D, W: number, H: number, t: number) => void) {
+    const c = h('canvas') as HTMLCanvasElement;
+    this.minis.push({ c, draw });
+    return c;
   }
 
+  // ───────── Appear & disappear ─────────
   private inoutPage() {
-    const chips = h('div', { class: 'chips' }, ...['All', ...ANIM_GROUPS].map((g) => {
-      const b = h('button', { class: 'chip' + (g === this.animGroup ? ' on' : '') }, g);
-      b.addEventListener('click', () => { this.animGroup = g; this.render(); });
-      return b;
-    }));
-    const pickSeg = Seg<'in' | 'out'>([{ value: 'in', label: 'Choosing IN' }, { value: 'out', label: 'Choosing OUT' }], () => this.pick, (v) => { this.pick = v; this.render(); });
-    const grid = h('div', { class: 'stack', style: { gap: '18px' } });
-    const groups = this.animGroup === 'All' ? ANIM_GROUPS : [this.animGroup];
-    for (const g of groups) {
-      const items = ANIM_LIBRARY.filter((a) => a.group === g);
-      const t = Tiles([{ id: '__none', label: 'None' } as any, ...items].filter((x, i) => i > 0 || g === groups[0]), {
-        onPick: (x) => { const id = x.id === '__none' ? null : x.id; if (this.pick === 'in') this.inId = id; else this.outId = id; this.save(); this.render(); },
-        isOn: (x) => (this.pick === 'in' ? this.inId : this.outId) === (x.id === '__none' ? null : x.id),
+    const tile = (id: string | null) => {
+      const a = animById(id);
+      return { id: id ?? '__none', label: a?.label ?? 'None', sub: '' };
+    };
+    const ins = Picks([tile(null), ...TOP_IN.map(tile)], {
+      isOn: (t) => (this.inId ?? '__none') === t.id,
+      onPick: (t) => { this.inId = t.id === '__none' ? null : t.id; this.save(); },
+      preview: (t) => this.mini((g, W, H, time) => this.drawCard(g, W, H, time, t.id === '__none' ? null : animById(t.id), null, 0.45)),
+      min: 118,
+    });
+    const outs = Picks([tile(null), ...TOP_OUT.map(tile)], {
+      isOn: (t) => (this.outId ?? '__none') === t.id,
+      onPick: (t) => { this.outId = t.id === '__none' ? null : t.id; this.save(); },
+      preview: (t) => this.mini((g, W, H, time) => this.drawCard(g, W, H, time, null, t.id === '__none' ? null : animById(t.id), 0.45)),
+      min: 118,
+    });
+    // full library
+    const allBox = h('div', { class: 'stack' });
+    const drawAll = () => {
+      clear(allBox);
+      const items = ANIM_LIBRARY.filter((a) => a.group === this.allGroup).map((a) => ({ id: a.id, label: a.label }));
+      const p = Picks(items, {
+        isOn: (t) => (this.allFor === 'in' ? this.inId : this.outId) === t.id,
+        onPick: (t) => { if (this.allFor === 'in') this.inId = t.id; else this.outId = t.id; this.save(); ins.refresh(); outs.refresh(); },
         min: 118,
       });
-      grid.appendChild(Group(g, [t.el]));
-    }
+      allBox.append(p.el);
+    };
+    drawAll();
     this.body.append(
-      h('div', { class: 'panel-card' },
-        pickSeg,
-        h('div', { class: 'kv' }, h('span', null, 'In'), h('b', null, animById(this.inId)?.label ?? 'None'), h('span', null, 'Out'), h('b', null, animById(this.outId)?.label ?? 'None')),
-        chips,
+      Step(1, 'How it appears', [ins.el]),
+      Step(2, 'How it disappears', [outs.el]),
+      Step(3, 'Speed', [h('div', { class: 'row' },
+        Slider({ label: 'Duration', min: 0.1, max: 2.5, step: 0.05, unit: ' s', get: () => this.inDur, set: (v) => { this.inDur = v; this.outDur = Math.max(0.1, +(v * 0.75).toFixed(2)); this.save(); } }),
+        Slider({ label: 'Strength', min: 0.2, max: 2.5, step: 0.05, get: () => this.strength, set: (v) => { this.strength = v; this.save(); } }))],
+        'follows the layer’s in/out points'),
+      More('anim-all', [
+        h('div', { class: 'row wrap' },
+          Chips<'in' | 'out'>([{ value: 'in', label: 'Choose for IN' }, { value: 'out', label: 'Choose for OUT' }], () => this.allFor, (v) => { this.allFor = v; drawAll(); refreshAll(); }),
+          Select(ANIM_GROUPS.map((g) => ({ value: g, label: g })), () => this.allGroup, (v) => { this.allGroup = v; drawAll(); })),
+        allBox,
+      ], `All ${ANIM_LIBRARY.length} styles`),
+      More('anim-adv', [
         h('div', { class: 'row' },
-          Btn('Apply to selected layers', () => this.applyAnim(), { variant: 'primary', icon: 'send' }),
-          Btn('Bake to keyframes', () => bakeSelected(), { variant: 'soft', title: 'Replace Kinetix expressions on the selected layers with plain keyframes — faster renders' }),
-          Btn('Remove', () => this.clearAnim(), { variant: 'danger' })),
-        h('div', { class: 'hint' }, 'Animations follow the layer’s in/out points — trim or move the layer and they stay attached. Duration, strength and eases stay editable on the layer as KX sliders.')),
-      grid,
+          Slider({ label: 'In duration', min: 0.05, max: 4, step: 0.05, unit: ' s', get: () => this.inDur, set: (v) => { this.inDur = v; this.save(); } }),
+          Slider({ label: 'Out duration', min: 0.05, max: 4, step: 0.05, unit: ' s', get: () => this.outDur, set: (v) => { this.outDur = v; this.save(); } })),
+        h('div', { class: 'row' },
+          Field('In ease', Select(EASE_LIBRARY.map((e) => ({ value: e.id, label: e.label })), () => this.inEase, (v) => { this.inEase = v; this.save(); })),
+          Field('Out ease', Select(EASE_LIBRARY.map((e) => ({ value: e.id, label: e.label })), () => this.outEase, (v) => { this.outEase = v; this.save(); }))),
+        Btn('Remove Kinetix animation from selected layers', () => this.clearAnim(), { variant: 'danger', size: 'sm' }),
+      ]),
     );
   }
 
+  // ───────── Smooth keyframes ─────────
+  private easePage() {
+    const top = Picks(TOP_EASES.map(([id, label]) => ({ id, label })), {
+      isOn: (t) => t.id === this.ease,
+      onPick: (t) => { this.ease = t.id; this.save(); },
+      preview: (t) => easeThumb(easeById(t.id), 140, 56),
+      min: 118,
+    });
+    const allBox = h('div');
+    const drawAll = () => {
+      clear(allBox);
+      const p = Picks(EASE_LIBRARY.filter((e) => e.group === this.easeGroup).map((e) => ({ id: e.id, label: e.label })), {
+        isOn: (t) => t.id === this.ease, onPick: (t) => { this.ease = t.id; this.save(); top.refresh(); }, preview: (t) => easeThumb(easeById(t.id), 140, 56), min: 118,
+      });
+      allBox.append(p.el);
+    };
+    drawAll();
+    this.body.append(
+      Step(1, 'Pick a feel', [top.el], 'select 2+ keyframes in AE, then Apply'),
+      More('ease-all', [Select(EASE_GROUPS.map((g) => ({ value: g, label: g })), () => this.easeGroup, (v) => { this.easeGroup = v; drawAll(); }), allBox], `All ${EASE_LIBRARY.length} eases`),
+      More('ease-adv', [
+        h('div', { class: 'hint' }, 'Curves are written as real AE keyframe speed. Springs, elastic and bounce become a small expression that keeps your keyframes.'),
+        Btn('Apply as expression instead', () => this.applyEase(true), { variant: 'soft', size: 'sm' }),
+        h('div', { class: 'lbl' }, 'Custom spring'),
+        h('div', { class: 'row' },
+          Slider({ label: 'Stiffness', min: 3, max: 40, step: 0.5, get: () => this.spring.k, set: (v) => { this.spring.k = v; } }),
+          Slider({ label: 'Bounciness', min: 0.05, max: 0.98, step: 0.01, get: () => 1 - this.spring.z, set: (v) => { this.spring.z = 1 - v; } })),
+        Btn('Apply custom spring', () => this.applySpring(), { size: 'sm', variant: 'soft' }),
+      ]),
+    );
+  }
+
+  // ───────── Shake & loop ─────────
   private wigglePage() {
     const w = this.wig;
-    const t = Tiles(WIGGLES.map((x) => ({ id: x.id, label: x.label, sub: x.sub })), { onPick: (x) => { w.id = x.id; this.render(); }, isOn: (x) => x.id === w.id, min: 150 });
-    const loops = Tiles(LOOPS.map((x) => ({ id: x.id, label: x.label, sub: x.sub })), { onPick: (x) => this.applyExpr(LOOPS.find((l) => l.id === x.id)!.expr, 'selected', [], `Loop: ${x.label}`, 'KX-LOOP'), min: 150 });
+    const t = Picks(WIGGLES.map((x) => ({ id: x.id, label: x.label, sub: x.sub })), {
+      isOn: (x) => x.id === w.id, onPick: (x) => { w.id = x.id; this.save(); },
+      preview: (x) => this.mini((g, W, H, time) => { const v = buildWiggle(x.id, 'position').preview(time, w.freq, Math.min(18, w.amp * 0.4), w.seed, w.loop); g.fillStyle = '#d1fe17'; g.beginPath(); g.arc(W / 2 + v[0], H / 2 + v[1], 9, 0, 7); g.fill(); }),
+      min: 130,
+    });
+    const loops = Picks(LOOPS.map((x) => ({ id: x.id, label: x.label, sub: x.sub })), { isOn: () => false, onPick: (x) => this.applyExpr(LOOPS.find((l) => l.id === x.id)!.expr, 'selected', [], `Loop: ${x.label}`, 'KX-LOOP'), min: 130 });
     this.body.append(
-      h('div', { class: 'panel-card' },
-        h('div', { class: 'row' },
-          Field('Property', Select([{ value: 'position', label: 'Position' }, { value: 'scale', label: 'Scale' }, { value: 'rotation', label: 'Rotation' }, { value: 'opacity', label: 'Opacity' }, { value: 'selected', label: 'Selected properties' }], () => w.prop, (v) => { w.prop = v; this.save(); })),
-          Slider({ label: 'Speed (Hz)', min: 0.1, max: 12, step: 0.1, get: () => w.freq, set: (v) => { w.freq = v; this.save(); } })),
+      Step(1, 'Pick a motion', [t.el]),
+      Step(2, 'Adjust', [
+        Chips(PROPS, () => w.prop, (v) => { w.prop = v; this.save(); refreshAll(); }),
         h('div', { class: 'row' },
           Slider({ label: 'Amount', min: 0, max: 400, get: () => w.amp, set: (v) => { w.amp = v; this.save(); } }),
-          Slider({ label: 'Loop length (s)', min: 0, max: 20, step: 0.1, get: () => w.loop, set: (v) => { w.loop = v; this.save(); }, title: '0 = no loop' })),
-        Slider({ label: 'Seed', min: 1, max: 999, get: () => w.seed, set: (v) => { w.seed = v; this.save(); } }),
-        Btn('Apply motion to selected layers', () => this.applyWiggle(), { variant: 'primary', icon: 'send' }),
-        Btn('Bake to keyframes', () => bakeSelected(), { variant: 'soft' }),
-        h('div', { class: 'hint' }, 'Amount, speed and seed become KX sliders on the layer, so you can keyframe them later.')),
-      Group('Procedural motion', [t.el]),
-      Group('Loops (apply to selected properties with keyframes)', [loops.el]),
+          Slider({ label: 'Speed', min: 0.1, max: 12, step: 0.1, unit: ' /s', get: () => w.freq, set: (v) => { w.freq = v; this.save(); } }))]),
+      More('wig-adv', [
+        h('div', { class: 'row' },
+          Slider({ label: 'Loop every', min: 0, max: 20, step: 0.1, unit: ' s', get: () => w.loop, set: (v) => { w.loop = v; this.save(); }, title: '0 = no loop' }),
+          Slider({ label: 'Variation (seed)', min: 1, max: 999, get: () => w.seed, set: (v) => { w.seed = v; this.save(); } })),
+        h('div', { class: 'lbl' }, 'Loop existing keyframes — select the properties in AE, then click'),
+        loops.el,
+      ]),
     );
-  }
-
-  private inspector() {
-    const easeOpts = EASE_LIBRARY.map((e) => ({ value: e.id, label: `${e.group} · ${e.label}` }));
-    const box = h('div', { class: 'stack' });
-    onRefresh(box, () => {
-      const show = this.tab;
-      box.querySelectorAll<HTMLElement>('[data-tab]').forEach((x) => (x.style.display = x.dataset.tab === show ? '' : 'none'));
-    });
-    box.append(
-      h('div', { 'data-tab': 'ease', class: 'stack' },
-        h('div', { class: 'lbl' }, 'Selected'), (() => { const n = h('b'); onRefresh(n, () => { n.textContent = easeById(this.ease).label; }); return n; })(),
-        Btn('★ Favorite', () => { this.favs.has(this.ease) ? this.favs.delete(this.ease) : this.favs.add(this.ease); this.save(); toast(this.favs.has(this.ease) ? 'Added to favorites' : 'Removed from favorites'); }, { size: 'sm' }),
-        h('div', { class: 'divider' }),
-        h('div', { class: 'lbl' }, 'Spring wizard'),
-        Slider({ label: 'Stiffness', min: 3, max: 40, step: 0.5, get: () => this.spring.k, set: (v) => { this.spring.k = v; } }),
-        Slider({ label: 'Damping', min: 0.05, max: 0.98, step: 0.01, get: () => this.spring.z, set: (v) => { this.spring.z = v; } }),
-        Btn('Apply spring as expression', () => this.applySpring(), { size: 'sm', variant: 'soft' })),
-      h('div', { 'data-tab': 'inout', class: 'stack' },
-        Slider({ label: 'In duration (s)', min: 0.05, max: 4, step: 0.05, get: () => this.inDur, set: (v) => { this.inDur = v; this.save(); } }),
-        Field('In ease', Select(easeOpts, () => this.inEase, (v) => { this.inEase = v; this.save(); })),
-        Slider({ label: 'Out duration (s)', min: 0.05, max: 4, step: 0.05, get: () => this.outDur, set: (v) => { this.outDur = v; this.save(); } }),
-        Field('Out ease', Select(easeOpts, () => this.outEase, (v) => { this.outEase = v; this.save(); })),
-        Slider({ label: 'Strength', min: 0.1, max: 3, step: 0.05, get: () => this.strength, set: (v) => { this.strength = v; this.save(); } })),
-      h('div', { 'data-tab': 'wiggle', class: 'stack' }, h('div', { class: 'hint' }, 'Tip: “Loopable” wiggles repeat perfectly every loop length — great for seamless social loops.')),
-    );
-    return Section('Settings', [box], { color: 'var(--violet)' });
   }
 
   // ───────── AE actions ─────────
@@ -206,7 +220,7 @@ export class AnimateStudio implements Studio {
   }
   private applySpring() {
     const { k, z } = this.spring;
-    const e: EaseDef = { id: 'custom-spring', label: `Spring ${k}/${z}`, group: 'Spring', src: `var w=${k},z=${z};if(t<=0)return 0;if(t>=1)return 1;var wd=w*Math.sqrt(1-z*z);var e=1-Math.exp(-z*w*t)*(Math.cos(wd*t)+(z*w/wd)*Math.sin(wd*t));var e1=1-Math.exp(-z*w)*(Math.cos(wd)+(z*w/wd)*Math.sin(wd));return e+(1-e1)*t;` };
+    const e: EaseDef = { id: 'custom-spring', label: `Spring ${k}/${z.toFixed(2)}`, group: 'Spring', src: `var w=${k},z=${z};if(t<=0)return 0;if(t>=1)return 1;var wd=w*Math.sqrt(1-z*z);var e=1-Math.exp(-z*w*t)*(Math.cos(wd*t)+(z*w/wd)*Math.sin(wd*t));var e1=1-Math.exp(-z*w)*(Math.cos(wd)+(z*w/wd)*Math.sin(wd));return e+(1-e1)*t;` };
     call('exprApply', { target: 'selectedProps', expr: easeExpression(e), marker: 'KX-EASE', label: e.label }).then((r: any) => toast(`Spring applied to ${r.props} propert${r.props === 1 ? 'y' : 'ies'}`)).catch((er) => toast(er.message, 'err'));
   }
   private async applyAnim() {
@@ -222,7 +236,7 @@ export class AnimateStudio implements Studio {
   private applyWiggle() {
     const w = this.wig;
     const b = buildWiggle(w.id, w.prop);
-    this.applyExpr(b.expr, w.prop, [
+    return this.applyExpr(b.expr, w.prop, [
       { name: 'KX Wiggle Speed', value: w.freq }, { name: 'KX Wiggle Amount', value: w.amp }, { name: 'KX Wiggle Seed', value: w.seed }, { name: 'KX Loop Length', value: w.loop },
     ], b.label, 'KX-WIGGLE');
   }
@@ -233,43 +247,54 @@ export class AnimateStudio implements Studio {
     } catch (e: any) { toast(e.message, 'err', 6000); }
   }
 
-  // ───────── preview ─────────
+  // ───────── previews ─────────
   private loop() {
     const tick = (now: number) => {
       if (!this.active) return;
-      this.drawPreview(now / 1000);
+      const t = now / 1000;
+      this.paint(this.preview, (g, W, H) => this.drawMain(g, W, H, t));
+      for (const m of this.minis) this.paint(m.c, (g, W, H) => m.draw(g, W, H, t));
       this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);
   }
-
-  private drawPreview(time: number) {
-    const c = this.preview;
+  private paint(c: HTMLCanvasElement, fn: (g: CanvasRenderingContext2D, W: number, H: number) => void) {
     const r = c.getBoundingClientRect();
-    if (r.width < 2) return;
+    if (r.width < 2 || r.bottom < 0 || r.top > innerHeight) return;
     const dpr = window.devicePixelRatio || 1;
     if (c.width !== Math.round(r.width * dpr)) { c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr); }
     const g = c.getContext('2d')!;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const W = r.width, H = r.height;
-    g.clearRect(0, 0, W, H);
-    if (this.tab === 'ease') return this.drawEasePreview(g, W, H, time);
-    if (this.tab === 'wiggle') return this.drawWigglePreview(g, W, H, time);
-    // in/out: card enters, holds, exits
-    const cycle = this.inDur + 0.8 + this.outDur + 0.4;
-    const t = time % cycle;
-    const life = this.inDur + 0.8 + this.outDur;
+    g.clearRect(0, 0, r.width, r.height);
+    fn(g, r.width, r.height);
+  }
+  private drawMain(g: CanvasRenderingContext2D, W: number, H: number, time: number) {
+    if (this.tab === 'ease') {
+      const f = easeFn(easeById(this.ease)), t = Math.min(1, (time % 2) / 1.4), v = f(t);
+      g.strokeStyle = 'rgba(255,255,255,.08)'; g.lineWidth = 2; g.beginPath(); g.moveTo(30, H / 2); g.lineTo(W - 30, H / 2); g.stroke();
+      g.fillStyle = '#d1fe17'; g.beginPath(); g.arc(30 + (W - 60) * v, H / 2, 14, 0, 7); g.fill();
+      return;
+    }
+    if (this.tab === 'wiggle') {
+      const v = buildWiggle(this.wig.id, 'position').preview(time, this.wig.freq, Math.min(40, this.wig.amp), this.wig.seed, this.wig.loop);
+      g.fillStyle = '#d1fe17'; g.beginPath(); g.arc(W / 2 + v[0], H / 2 + v[1], 14, 0, 7); g.fill();
+      return;
+    }
+    this.drawCard(g, W, H, time, animById(this.inId), animById(this.outId), 1);
+  }
+  /** A card that enters, holds and exits — the same expression snippets AE runs. */
+  private drawCard(g: CanvasRenderingContext2D, W: number, H: number, time: number, inA: AnimDef | null, outA: AnimDef | null, scale: number) {
+    const inDur = this.inDur, outDur = this.outDur;
+    const hold = inA && !outA ? 0.9 : !inA && outA ? 0.5 : 0.8;
+    const life = (inA ? inDur : 0) + hold + (outA ? outDur : 0);
+    const t = time % (life + 0.45);
     if (t > life) return;
-    const inA = animById(this.inId), outA = animById(this.outId);
-    const ri = inA ? Math.min(1, t / this.inDur) : 1, ro = outA ? Math.min(1, (life - t) / this.outDur) : 1;
+    const ri = inA ? Math.min(1, t / inDur) : 1, ro = outA ? Math.min(1, (life - t) / outDur) : 1;
     const ei = easeFn(easeById(this.inEase))(ri), eo = easeFn(easeById(this.outEase))(ro);
-    const cw = Math.min(150, W * 0.5), ch = 54;
+    const cw = Math.min(150 * scale + 20, W * 0.55), ch = Math.max(18, 54 * scale);
     const env = { k: this.strength, W: cw, H: ch, CW: W, CH: H, time };
     const run = (key: keyof AnimDef['props'], v: any) => evalSnippet(outA?.props[key], evalSnippet(inA?.props[key], v, ei, ri, env), eo, ro, env);
-    const pos = run('position', [W / 2, H / 2]);
-    const sc = run('scale', [100, 100]);
-    const rot = run('rotation', 0);
-    const op = run('opacity', 100);
+    const pos = run('position', [W / 2, H / 2]), sc = run('scale', [100, 100]), rot = run('rotation', 0), op = run('opacity', 100);
     const rx = run('rotationX', 0), ry = run('rotationY', 0);
     const fxVis = (name: string) => [inA, outA].some((a) => a?.fx?.some((f) => f.match === name));
     g.save();
@@ -278,36 +303,12 @@ export class AnimateStudio implements Studio {
     g.rotate((rot * Math.PI) / 180);
     g.scale((sc[0] / 100) * Math.cos((ry * Math.PI) / 180), (sc[1] / 100) * Math.cos((rx * Math.PI) / 180));
     const vis = Math.min(ri, ro);
-    if (fxVis('ADBE Box Blur2') || fxVis('ADBE Motion Blur')) g.filter = `blur(${((1 - vis) * 10).toFixed(1)}px)`;
+    if (fxVis('ADBE Box Blur2') || fxVis('ADBE Motion Blur') || fxVis('ADBE Wave Warp')) g.filter = `blur(${((1 - vis) * 8 * scale).toFixed(1)}px)`;
     if (fxVis('ADBE Linear Wipe') || fxVis('ADBE Radial Wipe') || fxVis('ADBE Venetian Blinds') || fxVis('ADBE Block Dissolve')) { g.beginPath(); g.rect(-cw / 2, -ch / 2, cw * vis, ch); g.clip(); }
     g.fillStyle = '#d1fe17';
-    g.beginPath(); g.roundRect(-cw / 2, -ch / 2, cw, ch, 14); g.fill();
-    g.fillStyle = '#1a1a1a';
-    g.font = '700 18px "Space Grotesk", sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText('KINETIX', 0, 1);
+    g.beginPath(); g.roundRect(-cw / 2, -ch / 2, cw, ch, 12 * scale + 4); g.fill();
+    if (scale >= 1) { g.fillStyle = '#1a1a1a'; g.font = '700 18px "Space Grotesk", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('KINETIX', 0, 1); }
     g.restore();
-  }
-
-  private drawEasePreview(g: CanvasRenderingContext2D, W: number, H: number, time: number) {
-    const f = easeFn(easeById(this.ease));
-    const t = Math.min(1, (time % 2) / 1.4);
-    const v = f(t);
-    const x0 = 30, x1 = W - 30;
-    g.strokeStyle = 'rgba(255,255,255,.08)'; g.lineWidth = 2;
-    g.beginPath(); g.moveTo(x0, H * 0.35); g.lineTo(x1, H * 0.35); g.stroke();
-    g.fillStyle = '#d1fe17';
-    g.beginPath(); g.arc(x0 + (x1 - x0) * v, H * 0.35, 13, 0, 7); g.fill();
-    const s = 0.4 + 0.6 * v;
-    g.fillStyle = 'rgba(209,254,23,.18)';
-    g.beginPath(); g.arc(W / 2, H * 0.75, 26 * Math.max(0, s), 0, 7); g.fill();
-  }
-
-  private drawWigglePreview(g: CanvasRenderingContext2D, W: number, H: number, time: number) {
-    const b = buildWiggle(this.wig.id, 'position');
-    const v = b.preview(time, this.wig.freq, Math.min(60, this.wig.amp), this.wig.seed, this.wig.loop);
-    g.fillStyle = '#d1fe17';
-    g.beginPath(); g.arc(W / 2 + v[0], H / 2 + v[1], 14, 0, 7); g.fill();
   }
 }
 
@@ -319,5 +320,3 @@ var n=0;if(numKeys>1){n=nearestKey(time).index;if(key(n).time>time)n--;}
 function L(a,b,s){if(a instanceof Array){var r=[];for(var i=0;i<a.length;i++)r.push(a[i]+(b[i]-a[i])*s);return r;}return a+(b-a)*s;}
 if(n>=1&&n<numKeys){var t1=key(n).time,t2=key(n+1).time;L(key(n).value,key(n+1).value,E((time-t1)/(t2-t1)));}else value;`;
 }
-
-void Toggle;

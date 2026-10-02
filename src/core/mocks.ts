@@ -101,3 +101,4 @@ registerMock('sfxSample3', () => {
   return { fps, t0: 0, end: 5.5, comp: { w: 1920, h: 1080 }, layers: [ball, ...cards, panel, title] };
 });
 registerMock('sfxPlaceMix', (p: any) => ({ layers: p.files.length }));
+registerMock('selInfo', () => ({ comp: 'Preview Comp', layers: 2, text: 1, shape: 1, keys: 4, camera: false }));

@@ -1,5 +1,6 @@
-import { h, Section, Slider, Seg, Btn, Field, Select, Toggle, toast, refreshAll, clear, TextInput, onRefresh } from '../ui/kit';
-import { Page, Tiles, Group } from '../core/page';
+import { h, Slider, Seg, Btn, Field, Select, Toggle, toast, refreshAll, clear, TextInput, onRefresh, Chips } from '../ui/kit';
+import { Tiles, Group } from '../core/page';
+import { Flow, Step, More, Picks } from '../ui/flow';
 import { call } from '../core/ae-bridge';
 import { registerCommands } from '../core/commands';
 import { EASE_LIBRARY, easeById } from '../animate/eases';
@@ -7,6 +8,7 @@ import { MOTIONS, MOTION_GROUPS, LOOPS, DIRV, buildType, previewAmount, type Uni
 import type { Studio } from '../main';
 
 const LS = 'kinetix.type';
+const LOOKS_LOOP = (id: string | null) => LOOPS.find((x) => x.id === id);
 type Phase = 'in' | 'out' | 'loop';
 
 export class TypeStudio implements Studio {
@@ -21,6 +23,7 @@ export class TypeStudio implements Studio {
     inEase: 'expoOut', outEase: 'expoIn',
     inDur: 0.6, outDur: 0.45, stagger: 0.035, autoFit: false, strength: 1, seed: 7, speed: 100,
     sample: 'Kinetix Type',
+    look: 'fade-up', exit: 'none' as 'none' | 'same' | 'fade',
   };
   private grid: HTMLElement;
   private preview: HTMLCanvasElement;
@@ -54,47 +57,63 @@ export class TypeStudio implements Studio {
       () => (c.phase === 'out' ? c.outOrder : c.inOrder), (v) => { if (c.phase === 'out') c.outOrder = v; else c.inOrder = v; save(); });
     const easeOpts = EASE_LIBRARY.map((e) => ({ value: e.id, label: `${e.group} · ${e.label}` }));
 
-    const main = [
-      h('div', { class: 'panel-card' },
-        Seg<Phase>([{ value: 'in', label: 'Animate IN' }, { value: 'out', label: 'Animate OUT' }, { value: 'loop', label: 'Loop / Emphasis' }], () => c.phase, (v) => { c.phase = v; save(); this.renderGrid(); refreshAll(); }),
-        h('div', { class: 'kv' },
-          h('span', null, 'In'), h('b'), h('span', null, 'Out'), h('b'), h('span', null, 'Loop'), h('b')),
-        h('div', { class: 'row' },
-          Btn('Apply to selected text layers', () => this.apply(), { variant: 'primary', icon: 'send' }),
-          Btn('Remove', () => this.clear(), { variant: 'danger' })),
-        h('div', { class: 'hint' }, 'Live AE Text Animators: the text stays editable (change words or fonts any time). Timing sliders stay on the layer.')),
-      this.grid,
+    const LOOKS: { id: string; label: string; in: string; unit: Unit; order: Order; dir: Dir; stagger: number }[] = [
+      { id: 'typewriter', label: 'Typewriter', in: 'typewriter', unit: 'char', order: 'start', dir: 'up', stagger: 0.05 },
+      { id: 'fade-up', label: 'Soft rise', in: 'fade-dir', unit: 'char', order: 'start', dir: 'up', stagger: 0.03 },
+      { id: 'pop', label: 'Pop letters', in: 'pop', unit: 'char', order: 'start', dir: 'up', stagger: 0.035 },
+      { id: 'bounce', label: 'Bounce in', in: 'bounce-in', unit: 'char', order: 'start', dir: 'up', stagger: 0.04 },
+      { id: 'blur-words', label: 'Blur words', in: 'blur', unit: 'word', order: 'start', dir: 'up', stagger: 0.12 },
+      { id: 'slide-words', label: 'Slide words', in: 'fade-dir', unit: 'word', order: 'start', dir: 'left', stagger: 0.1 },
+      { id: 'spring', label: 'Spring center', in: 'spring-scale', unit: 'char', order: 'center', dir: 'up', stagger: 0.03 },
+      { id: 'flip', label: '3D flip', in: 'flip-x', unit: 'char', order: 'start', dir: 'up', stagger: 0.04 },
+      { id: 'scramble', label: 'Scramble', in: 'scramble', unit: 'char', order: 'random', dir: 'up', stagger: 0.03 },
+      { id: 'glitch', label: 'Glitch', in: 'glitch', unit: 'char', order: 'random', dir: 'up', stagger: 0.02 },
+      { id: 'elastic', label: 'Elastic drop', in: 'elastic-drop', unit: 'char', order: 'start', dir: 'up', stagger: 0.04 },
+      { id: 'lines', label: 'Lines rise', in: 'rise', unit: 'line', order: 'start', dir: 'up', stagger: 0.15 },
     ];
-    const side = [
-      Section('Preview', [this.preview, Field('Sample text', TextInput({ get: () => c.sample, set: (v) => { c.sample = v || 'Kinetix Type'; save(); } }))], { color: 'var(--lime)' }),
-      Section('Direction & units', [pad(), unitSeg(), Field('Order', orderSeg())], { color: 'var(--info)' }),
-    ];
-    const right = [
-      Section('Timing', [
-        Slider({ label: 'In duration (s)', min: 0.05, max: 3, step: 0.01, get: () => c.inDur, set: set('inDur') }),
-        Slider({ label: 'Out duration (s)', min: 0.05, max: 3, step: 0.01, get: () => c.outDur, set: set('outDur') }),
-        Slider({ label: 'Stagger (s)', min: 0, max: 0.4, step: 0.005, get: () => c.stagger, set: set('stagger') }),
-        Toggle('Auto-fit stagger (1.2 s total)', () => c.autoFit, set('autoFit')),
-        Slider({ label: 'Strength', min: 0.1, max: 3, step: 0.05, get: () => c.strength, set: set('strength') }),
-        Slider({ label: 'Loop speed %', min: 5, max: 400, get: () => c.speed, set: set('speed') }),
-        Slider({ label: 'Random seed', min: 1, max: 999, get: () => c.seed, set: set('seed') }),
-      ], { color: 'var(--lime)' }),
-      Section('Easing', [
-        Field('In ease', Select(easeOpts, () => c.inEase, set('inEase'))),
-        Field('Out ease', Select(easeOpts, () => c.outEase, set('outEase'))),
-        h('div', { class: 'hint' }, 'Picking a motion sets its signature ease (e.g. Drop → Bounce); change it here afterwards.'),
-      ], { color: 'var(--violet)' }),
-    ];
-    this.el = Page({ title: 'Type Animator', sub: 'Letter, word and line animations on live text — direction pad, order, spring physics and loops.', side, main, right }).el;
-    this.renderGrid();
-    // keep the In/Out/Loop summary up to date
-    const kv = this.el.querySelector('.kv')!;
-    onRefresh(kv as HTMLElement, () => {
-      const b = kv.querySelectorAll('b');
-      b[0].textContent = MOTIONS.find((x) => x.id === c.inId)?.label ?? 'None';
-      b[1].textContent = MOTIONS.find((x) => x.id === c.outId)?.label ?? 'None';
-      b[2].textContent = LOOPS.find((x) => x.id === c.loopId)?.label ?? 'None';
+    LOOKS.forEach((L) => { this.looks[L.id] = L; });
+    const pickLook = (L: typeof LOOKS[number]) => {
+      const mo = MOTIONS.find((x) => x.id === L.in);
+      c.inId = L.in; c.inUnit = L.unit; c.inOrder = L.order; c.inDir = L.dir; c.stagger = L.stagger; c.look = L.id;
+      if (mo?.ease) c.inEase = mo.ease;
+      this.syncExit(); save(); this.renderGrid(); refreshAll();
+    };
+    const looks = Picks(LOOKS, {
+      isOn: (t) => c.look === t.id, onPick: pickLook,
+      preview: (t) => this.mini(t.id),
+      min: 132,
     });
+    const exits = Chips<'none' | 'same' | 'fade'>([{ value: 'none', label: 'Stays on screen' }, { value: 'same', label: 'Same, reversed' }, { value: 'fade', label: 'Fade away' }], () => c.exit, (v) => { c.exit = v; this.syncExit(); save(); refreshAll(); });
+    const loopChips = Chips<string>([{ value: '', label: 'None' }, ...LOOPS.map((x) => ({ value: x.id, label: x.label }))], () => c.loopId ?? '', (v) => { c.loopId = v || null; save(); refreshAll(); });
+    const body = [
+      this.preview,
+      Step(1, 'Pick a look', [looks.el]),
+      Step(2, 'Speed', [h('div', { class: 'row' },
+        Slider({ label: 'Duration', min: 0.1, max: 2, step: 0.01, unit: ' s', get: () => c.inDur, set: (v) => { c.inDur = v; c.outDur = Math.max(0.1, +(v * 0.75).toFixed(2)); save(); } }),
+        Slider({ label: 'Delay between', min: 0, max: 0.3, step: 0.005, unit: ' s', get: () => c.stagger, set: set('stagger') }))]),
+      Step(3, 'Leaving & looping', [exits, h('div', { class: 'lbl' }, 'While on screen'), loopChips], 'optional'),
+      More('type-adv', [
+        Field('Preview text', TextInput({ get: () => c.sample, set: (v) => { c.sample = v || 'Kinetix Type'; save(); } })),
+        Seg<Phase>([{ value: 'in', label: 'Edit IN' }, { value: 'out', label: 'Edit OUT' }], () => (c.phase === 'loop' ? 'in' : c.phase), (v) => { c.phase = v; save(); this.renderGrid(); refreshAll(); }),
+        h('div', { class: 'row' }, h('div', { class: 'stack', style: { gap: '6px' } }, h('div', { class: 'lbl' }, 'Direction'), pad()), h('div', { class: 'stack grow' }, unitSeg(), Field('Order', orderSeg()))),
+        this.grid,
+        h('div', { class: 'row' },
+          Field('In ease', Select(easeOpts, () => c.inEase, set('inEase'))),
+          Field('Out ease', Select(easeOpts, () => c.outEase, set('outEase')))),
+        h('div', { class: 'row' },
+          Slider({ label: 'Strength', min: 0.1, max: 3, step: 0.05, get: () => c.strength, set: set('strength') }),
+          Slider({ label: 'Loop speed', min: 5, max: 400, unit: ' %', get: () => c.speed, set: set('speed') })),
+        h('div', { class: 'row' },
+          Toggle('Fit the whole text into 1.2 s', () => c.autoFit, set('autoFit')),
+          Slider({ label: 'Random seed', min: 1, max: 999, get: () => c.seed, set: set('seed') })),
+        Btn('Remove Kinetix type animation from selected layers', () => this.clear(), { variant: 'danger', size: 'sm' }),
+      ], 'All motions & fine control'),
+    ];
+    this.el = Flow({
+      title: 'Type', sub: 'Animate text letter by letter, word by word or line by line. The text stays live — change words or font any time.',
+      body, action: { label: 'Animate selected text', icon: 'send', need: 'text', run: () => this.apply() },
+    }).el;
+    this.renderGrid();
     registerCommands([
       ...MOTIONS.map((x) => ({ id: 'type.in.' + x.id, label: 'Type In: ' + x.label, group: 'Type', run: () => { c.inId = x.id; this.apply(); } })),
       ...MOTIONS.map((x) => ({ id: 'type.out.' + x.id, label: 'Type Out: ' + x.label, group: 'Type', run: () => { c.outId = x.id; this.apply(); } })),
@@ -154,9 +173,31 @@ export class TypeStudio implements Studio {
   }
 
   // ───────── preview ─────────
+  private minis: { c: HTMLCanvasElement; look: string }[] = [];
+  private looks: Record<string, { in: string; unit: Unit; order: Order; dir: Dir; stagger: number }> = {};
+  private mini(look: string) {
+    const c = h('canvas') as HTMLCanvasElement;
+    this.minis.push({ c, look });
+    return c;
+  }
+  /** Out follows the chosen exit: nothing, the same motion reversed, or a fade. */
+  private syncExit() {
+    const c = this.c;
+    if (c.exit === 'none') c.outId = null;
+    else if (c.exit === 'fade') { c.outId = 'fade'; c.outUnit = 'line'; c.outOrder = 'start'; c.outEase = 'cubicIn'; }
+    else { c.outId = c.inId; c.outUnit = c.inUnit; c.outOrder = c.inOrder === 'start' ? 'end' : c.inOrder; c.outDir = c.inDir; c.outEase = 'expoIn'; }
+  }
   private draw(time: number) {
-    const cv = this.preview, r = cv.getBoundingClientRect();
-    if (r.width < 2) return;
+    this.paint(this.preview, time, this.phase('in'), this.phase('out'), LOOKS_LOOP(this.c.loopId), this.c.sample, false);
+    for (const m of this.minis) {
+      const L = this.looks[m.look];
+      const motion = L && MOTIONS.find((x) => x.id === L.in);
+      if (motion) this.paint(m.c, time, { motion, dir: L.dir, strength: 1, unit: L.unit, order: L.order, ease: easeById(motion.ease ?? 'expoOut') }, null, undefined, L.unit === 'line' ? 'Ab' : 'Abc', true, L.stagger);
+    }
+  }
+  private paint(cv: HTMLCanvasElement, time: number, inP: PhaseOpts | null, outP: PhaseOpts | null, loopM: (typeof LOOPS)[number] | undefined, text: string, small: boolean, staggerOverride?: number) {
+    const r = cv.getBoundingClientRect();
+    if (r.width < 2 || r.bottom < 0 || r.top > innerHeight) return;
     const dpr = window.devicePixelRatio || 1;
     if (cv.width !== Math.round(r.width * dpr)) { cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr); }
     const g = cv.getContext('2d')!;
@@ -164,12 +205,11 @@ export class TypeStudio implements Studio {
     const W = r.width, H = r.height;
     g.clearRect(0, 0, W, H);
     const c = this.c;
-    const text = c.sample;
-    const size = Math.min(44, (W * 1.5) / Math.max(6, text.length));
+    const stagger = staggerOverride ?? c.stagger;
+    const size = small ? Math.min(30, H * 0.55) : Math.min(44, (W * 1.5) / Math.max(6, text.length));
     g.font = `800 ${size}px "Space Grotesk", Inter, sans-serif`;
     g.textBaseline = 'middle';
-    const inP = this.phase('in'), outP = this.phase('out'), loopM = LOOPS.find((x) => x.id === c.loopId);
-    const life = 3.2, cycle = life + 0.6;
+    const life = small ? 1.8 : 3.2, cycle = life + 0.6;
     const t = time % cycle;
     if (t > life) return;
     // units
@@ -188,9 +228,10 @@ export class TypeStudio implements Studio {
       let ox = 0, oy = 0, sc = 1, rot = 0, op = 1, blur = 0;
       const applyP = (pr: PhaseOpts, out: boolean) => {
         const n = counts[pr.unit], i = idxOf(pr.unit, k);
-        const a = previewAmount(pr, out, i, n, t, 0, life, out ? c.outDur : c.inDur, c.stagger, c.seed) / 100;
+        const a = previewAmount(pr, out, i, n, t, 0, life, small ? 0.45 : out ? c.outDur : c.inDur, stagger, c.seed) / 100;
         const P = pr.motion.props(DIRV[pr.dir], pr.strength);
-        if (P.pos) { ox += P.pos[0] * a * 0.5; oy += P.pos[1] * a * 0.5; }
+        const ps = small ? 0.25 : 0.5;
+        if (P.pos) { ox += P.pos[0] * a * ps; oy += P.pos[1] * a * ps; }
         if (P.scale) sc *= 1 + ((P.scale[1] / 100) - 1) * a;
         if (P.rot) rot += P.rot * a;
         if (P.rotX || P.rotY) sc *= Math.max(0.02, Math.cos(((P.rotX || P.rotY || 0) * a * Math.PI) / 180));
@@ -214,7 +255,7 @@ export class TypeStudio implements Studio {
       g.translate(gl.x + gl.w / 2 + ox, H / 2 + oy);
       g.rotate((rot * Math.PI) / 180);
       g.scale(sc, sc);
-      g.fillStyle = '#f7f7f8';
+      g.fillStyle = small ? '#d1fe17' : '#f7f7f8';
       g.fillText(gl.ch, -gl.w / 2, 0);
       g.restore();
     });

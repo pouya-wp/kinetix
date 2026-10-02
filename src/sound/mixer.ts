@@ -17,6 +17,7 @@ export interface Pack {
   tilt: number;      // top-end shelf dB (negative = softer)
   tuned: boolean;    // pitch tonal sounds to a scale by default
   map: Partial<Record<Role, Src[]>>;
+  mixAll?: boolean;  // blended styles: draw from every source, not just the first
 }
 
 const P = (cat: string, maxDur?: number, extra: Partial<{ minDur: number; maxCen: number; minCen: number }> = {}): Src => ({ cat, maxDur, ...extra });
@@ -73,6 +74,38 @@ export const PACKS: Pack[] = [
     } },
 ];
 
+// ── mixing styles: the user can pick several styles and override any event family ──
+export const FAMILIES: { id: string; label: string; roles: Role[] }[] = [
+  { id: 'appear', label: 'Appear / pop-in', roles: ['enter', 'pop', 'cut'] },
+  { id: 'impact', label: 'Landing / bounce', roles: ['land', 'bounce', 'settle', 'hit'] },
+  { id: 'motion', label: 'Moves / whoosh', roles: ['whoosh', 'spin', 'cam'] },
+  { id: 'exit', label: 'Disappear', roles: ['exit', 'shrink'] },
+  { id: 'type', label: 'Typing', roles: ['type', 'nudge'] },
+  { id: 'morph', label: 'Morph', roles: ['morph'] },
+];
+// sensible length limits per family when a library category is forced onto it
+const FAMILY_DUR: Record<string, number> = { appear: 0.45, impact: 0.5, motion: 1.6, exit: 0.6, type: 0.12, morph: 1.0 };
+
+/** Blend several styles (round-robin across them) and apply per-family category overrides. */
+export function blendPacks(ids: string[], overrides: Record<string, string[]> = {}): Pack {
+  const ps = PACKS.filter((p) => ids.includes(p.id));
+  const list = ps.length ? ps : [PACKS[0]];
+  const map: Partial<Record<Role, Src[]>> = {};
+  for (const f of FAMILIES) {
+    for (const r of f.roles) {
+      const ov = overrides[f.id];
+      if (ov?.length) { map[r] = ov.map((c) => (c.startsWith('synth:') ? SY(c.slice(6)) : P(c, r === 'type' || r === 'nudge' ? 0.12 : FAMILY_DUR[f.id]))); continue; }
+      // interleave: style A's first choice, style B's first choice, A's second…
+      const cols = list.map((p) => p.map[r] ?? []);
+      const merged: Src[] = [];
+      for (let i = 0; i < Math.max(...cols.map((c) => c.length)); i++) for (const c of cols) if (c[i]) merged.push(c[i]);
+      map[r] = merged;
+    }
+  }
+  const avg = (k: 'room' | 'tilt') => list.reduce((a, p) => a + p[k], 0) / list.length;
+  return { id: list.map((p) => p.id).join('+'), label: list.map((p) => p.label).join(' + '), sub: '', room: avg('room'), tilt: avg('tilt'), tuned: list.some((p) => p.tuned), map, mixAll: list.length > 1 };
+}
+
 // level per role (dB) — primaries forward, motion beds and detail tucked under
 const ROLE_DB: Record<Role, number> = { enter: 0, pop: -1, land: -1, hit: 0, bounce: -3, settle: -9, exit: -5, shrink: -5, whoosh: -8, spin: -10, nudge: -12, type: -14, morph: -6, cam: -7, cut: -5 };
 const STEMS: Record<Role, 'pops' | 'motion' | 'detail'> = { enter: 'pops', pop: 'pops', land: 'pops', hit: 'pops', bounce: 'pops', settle: 'pops', exit: 'pops', shrink: 'pops', cut: 'pops', whoosh: 'motion', spin: 'motion', cam: 'motion', morph: 'detail', nudge: 'detail', type: 'detail' };
@@ -113,10 +146,13 @@ export async function planVoices(events: Ev[], o: MixOpts): Promise<Voice[]> {
   const scale = SCALES[o.scale] ?? SCALES.pentatonic;
   for (const e of events) {
     const srcs = o.pack.map[e.role] ?? o.pack.map.enter!;
-    const src = srcs[(e.accent ?? 0) > 0 ? Math.min(srcs.length - 1, 1) : 0];
+    // blended styles rotate through every source (a stagger group keeps one); single styles use primary / accent slots
+    const gk = e.group !== undefined ? e.group : Math.floor(r() * 1000);
+    const src = o.pack.mixAll ? srcs[gk % srcs.length] : srcs[(e.accent ?? 0) > 0 ? Math.min(srcs.length - 1, 1) : 0];
     let buf: AudioBuffer, id: string, label: string, f0 = 0, tonal = false;
     if ('synth' in src) {
-      const gen = srcs[Math.floor(r() * srcs.length)] as { synth: string };
+      const syn = srcs.filter((x): x is { synth: string } => 'synth' in x);
+      const gen = o.pack.mixAll ? src : syn[Math.floor(r() * syn.length)];
       buf = await synthBuf(gen.synth, Math.floor(r() * 1000));
       id = 'synth:' + gen.synth; label = GENERATORS[gen.synth]?.label ?? gen.synth;
       tonal = isPitched(gen.synth); f0 = 523;

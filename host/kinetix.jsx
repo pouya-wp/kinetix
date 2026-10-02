@@ -2482,3 +2482,19 @@ KX.sfxPlaceMix = function (p) {
   app.endUndoGroup();
   return { layers: n };
 };
+
+// --------- Selection status for the panel (cheap, read-only) ---------
+KX.selInfo = function () {
+  var c = app.project ? app.project.activeItem : null;
+  if (!c || !(c instanceof CompItem)) return { comp: null, layers: 0, text: 0, shape: 0, keys: 0, camera: false };
+  var sel = c.selectedLayers, text = 0, shape = 0, keys = 0;
+  for (var i = 0; i < sel.length; i++) {
+    if (sel[i] instanceof TextLayer) text++;
+    if (sel[i] instanceof ShapeLayer) shape++;
+  }
+  var props = c.selectedProperties;
+  for (var j = 0; j < props.length; j++) { try { if (props[j].propertyType === PropertyType.PROPERTY) keys += props[j].selectedKeys.length; } catch (e) {} }
+  var cam = false;
+  for (var k = 1; k <= c.numLayers; k++) if (c.layer(k) instanceof CameraLayer) { cam = true; break; }
+  return { comp: c.name, layers: sel.length, text: text, shape: shape, keys: keys, camera: cam };
+};
