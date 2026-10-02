@@ -7,6 +7,7 @@ import { store, loadPersisted } from './core/state';
 import { clock } from './core/clock';
 import { inAE, setHostErrorHook, nodeRequire } from './core/ae-bridge';
 import { log, logText, logPath, installGlobalHandlers } from './core/log';
+import { showHelp, welcome } from './core/help';
 import { syncCompFromAE } from './core/common-ui';
 import { openPalette, registerCommands } from './core/commands';
 import './core/mocks';
@@ -98,12 +99,13 @@ function boot() {
   registerCommands(SECTIONS.map((s) => ({ id: 'go.' + s.id, label: 'Open ' + s.title, group: 'Sections', run: () => select(s.id) })));
 
   const cmdBtn = h('button', { class: 'btn btn-sm cmd-btn', title: 'Command palette (Ctrl+K)', onclick: () => openPalette() }, svg(I.search), h('span', null, 'Search commands…'), h('kbd', null, 'Ctrl K'));
+  const helpBtn = h('button', { class: 'btn btn-sm', title: 'How this section works', onclick: () => { const d = SECTIONS.find((x) => built.get(x.id) === active); if (d) showHelp(d.id, d.title); } }, '?');
   const inspectorBtn = h('button', { class: 'btn btn-sm inspector-toggle', title: 'Show / hide the inspector (Tab)' }, svg(I.wand), 'Inspector');
   const status = h('div', { class: 'status' + (inAE ? ' on' : ''), title: inAE ? 'Connected to After Effects' : 'Running in browser preview (mock AE)' }, h('i'), h('span', null, inAE ? 'After Effects' : 'Preview mode'));
   const topbar = h('header', { class: 'topbar' },
     h('div', { class: 'brand' }, h('div', { class: 'logo-mark', html: LOGO }), h('span', { class: 'brand-name' }, 'KINETIX'), h('span', { class: 'brand-ver' }, 'PRO')),
     title,
-    h('div', { class: 'top-actions' }, cmdBtn, inspectorBtn, status),
+    h('div', { class: 'top-actions' }, cmdBtn, helpBtn, inspectorBtn, status),
   );
   const app = h('div', { class: 'app' }, topbar, h('div', { class: 'body' }, rail, area));
   inspectorBtn.addEventListener('click', () => { app.classList.toggle('show-inspector'); inspectorBtn.classList.toggle('on', app.classList.contains('show-inspector')); });
@@ -111,6 +113,10 @@ function boot() {
   let initial = 'camera';
   try { initial = localStorage.getItem('kinetix.tab') || 'camera'; } catch { /* */ }
   select(initial);
+  let seen = false;
+  try { seen = !!localStorage.getItem('kinetix.welcome'); localStorage.setItem('kinetix.welcome', '1'); } catch { /* storage blocked: show once per session */ }
+  if (!seen) welcome(SECTIONS, select);
+  registerCommands([{ id: 'help.welcome', label: 'Show welcome / tour', group: 'Help', run: () => welcome(SECTIONS, select) }, ...SECTIONS.map((s) => ({ id: 'help.' + s.id, label: 'How to: ' + s.title, group: 'Help', run: () => showHelp(s.id, s.title) }))]);
 
   window.addEventListener('keydown', (e) => {
     const k = e.key;

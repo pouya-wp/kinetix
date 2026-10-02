@@ -534,3 +534,7 @@ select.input option { background: var(--surface-2); }
 }
 .render-bar { position: sticky; top: -22px; z-index: 5; box-shadow: inset 0 0 0 1px var(--lime-line), 0 12px 30px rgba(0,0,0,.45); }
 .render-bar .btn-lg { min-width: 180px; }
+
+/* help cards */
+.help-steps { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 13px; line-height: 1.45; color: var(--text); }
+.help-steps li::marker { color: var(--lime); font-weight: 700; }
