@@ -913,3 +913,698 @@ KX.textApplyStyle = function (st) {
   app.endUndoGroup();
   return { layers: n, comps: comps.length };
 };
+
+// --------- Animate: eases, expressions, in/out ---------
+KX._layerOf = function (prop) { return prop.propertyGroup(prop.propertyDepth); };
+
+KX._easeDims = function (prop) {
+  var t = prop.propertyValueType;
+  if (t === PropertyValueType.TwoD) return 2;
+  if (t === PropertyValueType.ThreeD) return 3;
+  return 1;
+};
+
+/** Native keyframe ease from a cubic-bezier [x1,y1,x2,y2] on every pair of selected keys. */
+KX.easeApplyKeys = function (p) {
+  var comp = KX._comp(null, false);
+  var props = comp.selectedProperties, nProps = 0, nKeys = 0;
+  var b = p.bezier, x1 = Math.max(0.001, b[0]), y1 = b[1], x2 = Math.min(0.999, b[2]), y2 = b[3];
+  app.beginUndoGroup('Kinetix Ease');
+  for (var i = 0; i < props.length; i++) {
+    var pr = props[i];
+    if (pr.propertyType !== PropertyType.PROPERTY || pr.numKeys < 2) continue;
+    var sel = pr.selectedKeys;
+    if (!sel || sel.length < 2) continue;
+    var dims = KX._easeDims(pr), touched = false;
+    for (var s = 0; s < sel.length - 1; s++) {
+      var k = sel[s], k2 = sel[s + 1];
+      if (k2 !== k + 1) continue;
+      var dt = pr.keyTime(k2) - pr.keyTime(k);
+      if (dt <= 0) continue;
+      var va = pr.keyValue(k), vb = pr.keyValue(k2), avg = [];
+      if (pr.propertyValueType === PropertyValueType.SHAPE || pr.propertyValueType === PropertyValueType.COLOR || pr.propertyValueType === PropertyValueType.CUSTOM_VALUE || pr.propertyValueType === PropertyValueType.MARKER) {
+        avg = [0];
+      } else if (pr.isSpatial) {
+        var d2 = 0;
+        for (var q = 0; q < va.length; q++) d2 += (vb[q] - va[q]) * (vb[q] - va[q]);
+        avg = [Math.sqrt(d2) / dt];
+      } else if (dims === 1) {
+        avg = [((vb instanceof Array ? vb[0] : vb) - (va instanceof Array ? va[0] : va)) / dt];
+      } else {
+        for (var q2 = 0; q2 < dims; q2++) avg.push((vb[q2] - va[q2]) / dt);
+      }
+      var outE = [], inE = [];
+      for (var dd = 0; dd < avg.length; dd++) {
+        outE.push(new KeyframeEase((y1 / x1) * avg[dd], Math.max(0.1, Math.min(100, x1 * 100))));
+        inE.push(new KeyframeEase(((1 - y2) / (1 - x2)) * avg[dd], Math.max(0.1, Math.min(100, (1 - x2) * 100))));
+      }
+      var inK = pr.keyInInterpolationType(k), outK2 = pr.keyOutInterpolationType(k2);
+      pr.setInterpolationTypeAtKey(k, inK, KeyframeInterpolationType.BEZIER);
+      pr.setInterpolationTypeAtKey(k2, KeyframeInterpolationType.BEZIER, outK2);
+      pr.setTemporalEaseAtKey(k, pr.keyInTemporalEase(k), outE);
+      pr.setTemporalEaseAtKey(k2, inE, pr.keyOutTemporalEase(k2));
+      nKeys += 2; touched = true;
+    }
+    if (touched) nProps++;
+  }
+  app.endUndoGroup();
+  if (!nProps) throw new Error('Select at least two neighbouring keyframes on a property.');
+  return { keys: nKeys, props: nProps };
+};
+
+KX._ensureSlider = function (layer, name, value) {
+  var fx = layer.property('ADBE Effect Parade');
+  var e = null;
+  for (var i = 1; i <= fx.numProperties; i++) if (fx.property(i).name === name) { e = fx.property(i); break; }
+  if (!e) { e = fx.addProperty('ADBE Slider Control'); e.name = name; }
+  e.property('ADBE Slider Control-0001').setValue(value);
+  return e;
+};
+
+KX._TF = { position: 'ADBE Position', scale: 'ADBE Scale', rotation: 'ADBE Rotate Z', opacity: 'ADBE Opacity', rotationX: 'ADBE Rotate X', rotationY: 'ADBE Rotate Y', anchor: 'ADBE Anchor Point' };
+
+KX._tfProp = function (layer, key) {
+  var tf = layer.property('ADBE Transform Group');
+  if (key === 'position') {
+    var pos = tf.property('ADBE Position');
+    if (pos.dimensionsSeparated) {
+      // only re-join when it is safe (no keys on the separate dimensions)
+      if (tf.property('ADBE Position_0').numKeys === 0 && tf.property('ADBE Position_1').numKeys === 0) pos.dimensionsSeparated = false;
+      else return null;
+    }
+    return pos;
+  }
+  return tf.property(KX._TF[key]);
+};
+
+/** Put an expression on the selected properties, or on one transform property of each selected layer. */
+KX.exprApply = function (p) {
+  var comp = KX._comp(null, false);
+  app.beginUndoGroup('Kinetix ' + (p.label || 'Expression'));
+  var n = 0, i, layer, pr;
+  var withControls = function (ly) { if (p.controls) for (var c = 0; c < p.controls.length; c++) KX._ensureSlider(ly, p.controls[c].name, p.controls[c].value); };
+  if (p.target === 'selectedProps') {
+    var props = comp.selectedProperties;
+    for (i = 0; i < props.length; i++) {
+      pr = props[i];
+      if (pr.propertyType !== PropertyType.PROPERTY || !pr.canSetExpression) continue;
+      withControls(KX._layerOf(pr));
+      pr.expression = p.expr;
+      n++;
+    }
+    if (!n) { app.endUndoGroup(); throw new Error('Select one or more properties (e.g. Position) in the timeline first.'); }
+  } else {
+    var sel = comp.selectedLayers;
+    for (i = 0; i < sel.length; i++) {
+      layer = sel[i];
+      pr = KX._tfProp(layer, p.prop);
+      if (!pr || !pr.canSetExpression) continue;
+      withControls(layer);
+      pr.expression = p.expr;
+      n++;
+    }
+    if (!n) { app.endUndoGroup(); throw new Error('Select one or more layers first.'); }
+  }
+  app.endUndoGroup();
+  return { props: n };
+};
+
+KX._ANIM_CTL = { 'KX In Duration': 1, 'KX Out Duration': 1, 'KX Strength': 1 };
+
+KX._animClearLayer = function (layer) {
+  var tf = layer.property('ADBE Transform Group');
+  for (var k in KX._TF) {
+    if (!KX._TF.hasOwnProperty(k)) continue;
+    try { var pr = tf.property(KX._TF[k]); if (pr && pr.expression && pr.expression.indexOf('KX-ANIM') >= 0) pr.expression = ''; } catch (e) {}
+  }
+  var fx = layer.property('ADBE Effect Parade');
+  for (var i = fx.numProperties; i >= 1; i--) {
+    var ef = fx.property(i), kill = !!KX._ANIM_CTL[ef.name];
+    if (!kill) {
+      for (var j = 1; j <= ef.numProperties; j++) {
+        try { var q = ef.property(j); if (q.expression && q.expression.indexOf('KX-ANIM') >= 0) { kill = true; break; } } catch (e2) {}
+      }
+    }
+    if (kill) ef.remove();
+  }
+};
+
+KX._fxProp = function (ef, name) {
+  try { var p = ef.property(name); if (p) return p; } catch (e) {}
+  for (var i = 1; i <= ef.numProperties; i++) { var q = ef.property(i); if (q.name === name) return q; }
+  return null;
+};
+
+KX.animApply = function (r) {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, n = 0, warn = [];
+  if (!sel.length) throw new Error('Select one or more layers first.');
+  app.beginUndoGroup('Kinetix In/Out');
+  for (var i = 0; i < sel.length; i++) {
+    var layer = sel[i];
+    if (layer instanceof CameraLayer || layer instanceof LightLayer) continue;
+    KX._animClearLayer(layer);
+    if (r.needs3D && !layer.threeDLayer) layer.threeDLayer = true;
+    for (var c = 0; c < r.controls.length; c++) KX._ensureSlider(layer, r.controls[c].name, r.controls[c].value);
+    for (var p = 0; p < r.props.length; p++) {
+      var pr = KX._tfProp(layer, r.props[p].key);
+      if (!pr) { warn.push(layer.name + ': position has keyframes on separated dimensions'); continue; }
+      if (pr.expression && pr.expression.indexOf('KX-') < 0) { warn.push(layer.name + ': kept existing ' + r.props[p].key + ' expression'); continue; }
+      pr.expression = r.props[p].expr;
+    }
+    for (var f = 0; f < r.fx.length; f++) {
+      var F = r.fx[f], ef;
+      try { ef = layer.property('ADBE Effect Parade').addProperty(F.match); } catch (e) { warn.push('Effect not available: ' + F.match); continue; }
+      ef.name = F.name;
+      for (var sk in F.set) if (F.set.hasOwnProperty(sk)) { var sp = KX._fxProp(ef, sk); if (sp) try { sp.setValue(F.set[sk]); } catch (e3) {} }
+      for (var ek in F.expr) if (F.expr.hasOwnProperty(ek)) { var xp = KX._fxProp(ef, ek); if (xp) try { xp.expression = F.expr[ek]; } catch (e4) { warn.push(F.name + '/' + ek + ': ' + e4.message); } }
+    }
+    n++;
+  }
+  app.endUndoGroup();
+  return { layers: n, warnings: warn };
+};
+
+KX.animClear = function () {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers;
+  app.beginUndoGroup('Kinetix Clear In/Out');
+  for (var i = 0; i < sel.length; i++) KX._animClearLayer(sel[i]);
+  app.endUndoGroup();
+  return { layers: sel.length };
+};
+
+// --------- Camera & 3D (works on AE's own camera / 3D layers) ---------
+KX.RIG = 'KX Camera Rig';
+
+/** Evaluate an expression in the comp at its current time (via a temporary 3D point control). */
+KX._evalExpr = function (comp, expr) {
+  var n = comp.layers.addNull();
+  try {
+    var pc = n.property('ADBE Effect Parade').addProperty('ADBE Point3D Control');
+    var p = pc.property(1);
+    p.expression = expr;
+    var v = p.valueAtTime(comp.time, false);
+    return [v[0], v[1], v[2]];
+  } finally { n.remove(); }
+};
+
+KX._rig = function (comp) {
+  var sel = comp.selectedLayers;
+  for (var i = 0; i < sel.length; i++) if (sel[i].name.indexOf(KX.RIG) === 0) return sel[i];
+  for (var j = 1; j <= comp.numLayers; j++) if (comp.layer(j).name.indexOf(KX.RIG) === 0) return comp.layer(j);
+  return null;
+};
+
+KX._rigCam = function (comp, rig) {
+  if (!rig) return null;
+  for (var j = 1; j <= comp.numLayers; j++) {
+    var L = comp.layer(j);
+    if (L instanceof CameraLayer && L.comment === 'kx-rig:' + rig.name) return L;
+  }
+  return null;
+};
+
+KX._cam = function (comp) {
+  var rig = KX._rig(comp);
+  var c = KX._rigCam(comp, rig);
+  if (c) return c;
+  var sel = comp.selectedLayers;
+  for (var i = 0; i < sel.length; i++) if (sel[i] instanceof CameraLayer) return sel[i];
+  return comp.activeCamera;
+};
+
+KX._slv = function (layer, name) { return layer.property('ADBE Effect Parade').property(name).property('ADBE Slider Control-0001'); };
+
+KX.camScene = function () {
+  var comp = KX._comp(null, false);
+  var res = { comp: { w: comp.width, h: comp.height, fps: comp.frameRate, time: comp.time, duration: comp.duration, name: comp.name }, rig: null, cameras: [], layers: [], cam: null };
+  var rig = KX._rig(comp);
+  if (rig) {
+    var pos = rig.property('ADBE Transform Group').property('ADBE Position').valueAtTime(comp.time, false);
+    var g = function (n) { try { return KX._slv(rig, n).valueAtTime(comp.time, false); } catch (e) { return 0; } };
+    res.rig = { name: rig.name, pos: pos, distance: g('Distance'), orbit: g('Orbit'), tilt: g('Tilt'), roll: g('Roll'), focal: g('Focal Length (mm)'), pan: g('Pan'), look: g('Look'), overshoot: g('Overshoot') };
+  }
+  var cam = KX._cam(comp);
+  res.cam = cam ? KX._evalExpr(comp, 'var C=thisComp.layer(' + KXJSON.stringify(cam.name) + ');C.toWorld([0,0,0]);') : [comp.width / 2, comp.height / 2, -comp.width * 50 / 36];
+  for (var i = 1; i <= comp.numLayers; i++) {
+    var L = comp.layer(i);
+    if (L instanceof CameraLayer) { res.cameras.push({ index: i, name: L.name, active: comp.activeCamera === L }); continue; }
+    if (L instanceof LightLayer) continue;
+    if (L.name.indexOf('KX Camera') === 0) continue;
+    var tf = L.property('ADBE Transform Group');
+    var r = { left: 0, top: 0, width: 100, height: 100 };
+    try { r = L.sourceRectAtTime(comp.time, false); } catch (e2) {}
+    var p = tf.property('ADBE Position').valueAtTime(comp.time, false);
+    var s = tf.property('ADBE Scale').valueAtTime(comp.time, false);
+    var rot = [0, 0, 0];
+    try { rot = [tf.property('ADBE Rotate X').valueAtTime(comp.time, false), tf.property('ADBE Rotate Y').valueAtTime(comp.time, false), tf.property('ADBE Rotate Z').valueAtTime(comp.time, false)]; } catch (e3) {}
+    res.layers.push({ index: i, name: L.name, threeD: L.threeDLayer, pos: [p[0], p[1], p.length > 2 ? p[2] : 0], scale: [s[0], s[1], s.length > 2 ? s[2] : 100], rot: rot, w: r.width, h: r.height, sel: L.selected, kind: L instanceof TextLayer ? 'text' : L instanceof ShapeLayer ? 'shape' : 'footage' });
+  }
+  return res;
+};
+
+KX._newNull3D = function (comp, name, parent) {
+  var n = comp.layers.addNull();
+  n.name = name;
+  n.threeDLayer = true;
+  n.label = 9;
+  n.shy = false;
+  n.property('ADBE Transform Group').property('ADBE Anchor Point').setValue([0, 0, 0]);
+  if (parent) { n.parent = parent; n.property('ADBE Transform Group').property('ADBE Position').setValue([0, 0, 0]); }
+  return n;
+};
+
+/** Universal rig: Rig (target, orbit) > Tilt > Shake > one-node Camera, all driven by sliders. */
+KX.camRig = function (p) {
+  var comp = KX._comp(null, false);
+  var existing = KX._rig(comp);
+  if (existing && !p.forceNew) return { rig: existing.name, existed: true };
+  app.beginUndoGroup('Kinetix Camera Rig');
+  var name = KX._uniqueName(comp, KX.RIG);
+  var L = '"' + name + '"';
+  var rig = KX._newNull3D(comp, name, null);
+  rig.property('ADBE Transform Group').property('ADBE Position').setValue([comp.width / 2, comp.height / 2, 0]);
+  var mm = p.lens || 50;
+  var zoom = comp.width * mm / 36;
+  KX._slider(rig, 'Distance', zoom);
+  KX._slider(rig, 'Orbit', 0);
+  KX._slider(rig, 'Tilt', 0);
+  KX._slider(rig, 'Roll', 0);
+  KX._slider(rig, 'Pan', 0);
+  KX._slider(rig, 'Look', 0);
+  KX._slider(rig, 'Focal Length (mm)', mm);
+  KX._slider(rig, 'Overshoot', 0);
+  rig.property('ADBE Transform Group').property('ADBE Rotate Y').expression = '// KX-RIG\neffect("Orbit")("Slider")';
+  var tilt = KX._newNull3D(comp, name + ' Tilt', rig);
+  tilt.property('ADBE Transform Group').property('ADBE Rotate X').expression = '// KX-RIG\n-thisComp.layer(' + L + ').effect("Tilt")("Slider")';
+  var shake = KX._newNull3D(comp, name + ' Shake', tilt);
+  var cam = comp.layers.addCamera(name + ' Cam', [comp.width / 2, comp.height / 2]);
+  cam.comment = 'kx-rig:' + name;
+  cam.autoOrient = AutoOrientType.NO_AUTO_ORIENT;
+  cam.parent = shake;
+  var ct = cam.property('ADBE Transform Group');
+  ct.property('ADBE Orientation').setValue([0, 0, 0]);
+  ct.property('ADBE Position').expression = '// KX-RIG\n[0,0,-thisComp.layer(' + L + ').effect("Distance")("Slider")]';
+  ct.property('ADBE Rotate Y').expression = '// KX-RIG\nthisComp.layer(' + L + ').effect("Pan")("Slider")';
+  ct.property('ADBE Rotate X').expression = '// KX-RIG\n-thisComp.layer(' + L + ').effect("Look")("Slider")';
+  ct.property('ADBE Rotate Z').expression = '// KX-RIG\nthisComp.layer(' + L + ').effect("Roll")("Slider")';
+  var co = cam.property('ADBE Camera Options Group');
+  co.property('ADBE Camera Zoom').expression = '// KX-RIG\nthisComp.width*thisComp.layer(' + L + ').effect("Focal Length (mm)")("Slider")/36';
+  if (p.dof) co.property('ADBE Camera Depth of Field').setValue(1);
+  // hide helper nulls from the timeline clutter
+  tilt.shy = true; shake.shy = true;
+  cam.moveToBeginning(); rig.moveToBeginning();
+  app.endUndoGroup();
+  return { rig: name, existed: false };
+};
+
+KX.camCreate = function (p) {
+  var comp = KX._comp(null, false);
+  app.beginUndoGroup('Kinetix Camera');
+  var cam = comp.layers.addCamera(KX._uniqueName(comp, p.type === 'two' ? 'KX Camera 2-Node' : 'KX Camera 1-Node'), [comp.width / 2, comp.height / 2]);
+  if (p.type !== 'two') cam.autoOrient = AutoOrientType.NO_AUTO_ORIENT;
+  cam.property('ADBE Camera Options Group').property('ADBE Camera Zoom').setValue(comp.width * (p.lens || 50) / 36);
+  cam.property('ADBE Transform Group').property('ADBE Position').setValue([comp.width / 2, comp.height / 2, -comp.width * (p.lens || 50) / 36]);
+  app.endUndoGroup();
+  return { camera: cam.name };
+};
+
+KX._rigProp = function (rig, target) {
+  var tf = rig.property('ADBE Transform Group');
+  switch (target) {
+    case 'distance': return KX._slv(rig, 'Distance');
+    case 'orbit': return KX._slv(rig, 'Orbit');
+    case 'tilt': return KX._slv(rig, 'Tilt');
+    case 'roll': return KX._slv(rig, 'Roll');
+    case 'pan': return KX._slv(rig, 'Pan');
+    case 'look': return KX._slv(rig, 'Look');
+    case 'focal': return KX._slv(rig, 'Focal Length (mm)');
+    default: return tf.property('ADBE Position');
+  }
+};
+
+KX._OVERSHOOT = '\n// KX-PHYS\nvar amp=thisComp.layer("%RIG%").effect("Overshoot")("Slider")/100*0.09,fr=1.8,dc=5.5;var n=0;if(numKeys>0){n=nearestKey(time).index;if(key(n).time>time)n--;}' +
+  'if(n>1&&amp>0&&time>key(n).time){var t=time-key(n).time,vel=velocityAtTime(key(n).time-thisComp.frameDuration/10),w=amp*Math.sin(fr*t*2*Math.PI)/Math.exp(dc*t);(value instanceof Array)?add(value,mul(vel,w)):value+vel*w;}else value;';
+
+/** Keyframe rig controls from their value at t0 to a target value at t0+dur, with ease. */
+KX.camKeys = function (p) {
+  var comp = KX._comp(null, false);
+  var rig = KX._rig(comp);
+  if (!rig) { KX.camRig({ lens: 50 }); rig = KX._rig(comp); }
+  app.beginUndoGroup('Kinetix Camera Move');
+  var t0 = (p.t0 === null || p.t0 === undefined) ? comp.time : p.t0;
+  var t1 = t0 + Math.max(1 / comp.frameRate, p.dur);
+  KX._ensureDuration(comp, t1 + 0.5);
+  var touched = [];
+  for (var i = 0; i < p.ops.length; i++) {
+    var o = p.ops[i];
+    var prop = KX._rigProp(rig, o.target);
+    var cur = prop.valueAtTime(t0, false);
+    var from = cur, to;
+    if (o.target === 'rigX' || o.target === 'rigY' || o.target === 'rigZ') {
+      var ax = o.target === 'rigX' ? 0 : o.target === 'rigY' ? 1 : 2;
+      to = [cur[0], cur[1], cur[2]];
+      to[ax] = o.op === 'set' ? o.value : o.op === 'mul' ? cur[ax] * o.value : cur[ax] + o.value;
+    } else {
+      if (o.from !== null && o.from !== undefined) from = o.from;
+      to = o.op === 'set' ? o.value : o.op === 'mul' ? from * o.value : from + o.value;
+    }
+    var k0 = prop.addKey(t0); prop.setValueAtKey(k0, from);
+    var k1 = prop.addKey(t1); prop.setValueAtKey(k1, to);
+    touched.push(prop);
+    if (prop.isSpatial) KX._linearSpatial(prop);
+  }
+  // ease every touched property between the two new keys
+  for (var j = 0; j < touched.length; j++) {
+    var pr = touched[j];
+    var a = pr.nearestKeyIndex(t0), b = pr.nearestKeyIndex(t1);
+    var bz = p.bezier || [0.33, 0, 0.67, 1];
+    var dt = t1 - t0, va = pr.keyValue(a), vb = pr.keyValue(b), avg;
+    if (pr.isSpatial) { var d2 = 0; for (var q = 0; q < va.length; q++) d2 += (vb[q] - va[q]) * (vb[q] - va[q]); avg = Math.sqrt(d2) / dt; }
+    else avg = ((vb instanceof Array ? vb[0] : vb) - (va instanceof Array ? va[0] : va)) / dt;
+    var x1 = Math.max(0.001, bz[0]), y1 = bz[1], x2 = Math.min(0.999, bz[2]), y2 = bz[3];
+    pr.setInterpolationTypeAtKey(a, pr.keyInInterpolationType(a), KeyframeInterpolationType.BEZIER);
+    pr.setInterpolationTypeAtKey(b, KeyframeInterpolationType.BEZIER, pr.keyOutInterpolationType(b));
+    pr.setTemporalEaseAtKey(a, pr.keyInTemporalEase(a), [new KeyframeEase((y1 / x1) * avg, Math.max(0.1, x1 * 100))]);
+    pr.setTemporalEaseAtKey(b, [new KeyframeEase(((1 - y2) / (1 - x2)) * avg, Math.max(0.1, (1 - x2) * 100))], pr.keyOutTemporalEase(b));
+    if (p.physical) pr.expression = KX._OVERSHOOT.replace(/%RIG%/g, rig.name);
+  }
+  if (p.physical) KX._slv(rig, 'Overshoot').setValue(p.physical);
+  if (p.marker) { try { var mv = new MarkerValue('KX:cam ' + p.marker); mv.duration = t1 - t0; rig.property('ADBE Marker').setValueAtTime(t0, mv); } catch (eM) {} }
+  app.endUndoGroup();
+  return { rig: rig.name, t0: t0, t1: t1 };
+};
+
+KX.camSetRig = function (p) {
+  var comp = KX._comp(null, false);
+  var rig = KX._rig(comp);
+  if (!rig) throw new Error('Create a Kinetix rig first.');
+  app.beginUndoGroup('Kinetix Rig');
+  for (var k in p) {
+    if (!p.hasOwnProperty(k)) continue;
+    var prop = KX._rigProp(rig, k);
+    if (prop.numKeys > 0) prop.setValueAtTime(comp.time, p[k]); else prop.setValue(p[k]);
+  }
+  app.endUndoGroup();
+  return true;
+};
+
+KX.camLens = function (p) {
+  var comp = KX._comp(null, false);
+  var rig = KX._rig(comp);
+  app.beginUndoGroup('Kinetix Lens');
+  if (rig) {
+    var f = KX._slv(rig, 'Focal Length (mm)');
+    if (f.numKeys > 0) f.setValueAtTime(comp.time, p.mm); else f.setValue(p.mm);
+  } else {
+    var cam = KX._cam(comp);
+    if (!cam) { app.endUndoGroup(); throw new Error('No camera in this comp - create one first.'); }
+    var z = cam.property('ADBE Camera Options Group').property('ADBE Camera Zoom');
+    var v = comp.width * p.mm / 36;
+    if (z.numKeys > 0) z.setValueAtTime(comp.time, v); else z.setValue(v);
+  }
+  app.endUndoGroup();
+  return true;
+};
+
+/** Write positions / scales / rotations for many layers at once. */
+KX.camLayout = function (p) {
+  var comp = KX._comp(null, false);
+  app.beginUndoGroup('Kinetix 3D Layout');
+  for (var i = 0; i < p.items.length; i++) {
+    var it = p.items[i], L = comp.layer(it.index);
+    if (!L || L instanceof CameraLayer || L instanceof LightLayer) continue;
+    if (!L.threeDLayer) L.threeDLayer = true;
+    var tf = L.property('ADBE Transform Group');
+    var setv = function (prop, v) { if (prop.numKeys > 0) prop.setValueAtTime(comp.time, v); else prop.setValue(v); };
+    var pos = tf.property('ADBE Position');
+    if (pos.dimensionsSeparated) pos.dimensionsSeparated = false;
+    setv(pos, it.pos);
+    if (it.scale) setv(tf.property('ADBE Scale'), it.scale);
+    if (it.rot) { setv(tf.property('ADBE Rotate X'), it.rot[0]); setv(tf.property('ADBE Rotate Y'), it.rot[1]); setv(tf.property('ADBE Rotate Z'), it.rot[2]); }
+    if (p.face !== undefined) L.autoOrient = p.face ? AutoOrientType.CAMERA_OR_POINT_OF_INTEREST : AutoOrientType.NO_AUTO_ORIENT;
+  }
+  app.endUndoGroup();
+  return { layers: p.items.length };
+};
+
+KX.camMake3D = function (p) {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, n = 0;
+  app.beginUndoGroup('Kinetix 3D');
+  for (var i = 0; i < sel.length; i++) { if (sel[i] instanceof CameraLayer || sel[i] instanceof LightLayer) continue; sel[i].threeDLayer = p.on; n++; }
+  app.endUndoGroup();
+  return { layers: n };
+};
+
+KX._camExprName = function (comp) {
+  var cam = KX._cam(comp);
+  if (!cam) throw new Error('No camera in this comp - create one first.');
+  return cam;
+};
+
+/** Depth of field: auto-focus on a layer, rack focus between layers, or off. */
+KX.camFocus = function (p) {
+  var comp = KX._comp(null, false);
+  var cam = KX._camExprName(comp);
+  app.beginUndoGroup('Kinetix Focus');
+  var co = cam.property('ADBE Camera Options Group');
+  var fd = co.property('ADBE Camera Focus Distance'), ap = co.property('ADBE Camera Aperture');
+  if (p.mode === 'off') { co.property('ADBE Camera Depth of Field').setValue(0); fd.expression = ''; app.endUndoGroup(); return true; }
+  co.property('ADBE Camera Depth of Field').setValue(1);
+  if (p.blur) co.property('ADBE Camera Blur Level').setValue(p.blur);
+  if (p.fstop) ap.expression = '// KX-FOCUS\ncameraOption.zoom/' + p.fstop;
+  var dist = 'function D(n){var L=thisComp.layer(n),c=toWorld([0,0,0]),v=normalize(toWorldVec([0,0,1]));return Math.max(1,dot(sub(L.toWorld(L.anchorPoint),c),v));}\n';
+  if (p.mode === 'auto') {
+    fd.expression = '// KX-FOCUS\n' + dist + 'D(' + KXJSON.stringify(p.layers[0]) + ');';
+  } else {
+    // rack focus: hold on each layer, then pull focus to the next over `pull` seconds
+    fd.expression = '// KX-FOCUS rack\n' + dist + 'var N=' + KXJSON.stringify(p.layers) + ',T=' + KXJSON.stringify(p.times) + ',P=' + (p.pull || 0.6) + ';\n' +
+      'var i=0;while(i<T.length-1&&time>=T[i+1])i++;var d=D(N[i]);if(i<T.length-1&&time>T[i+1]-P)d=ease(time,T[i+1]-P,T[i+1],D(N[i]),D(N[i+1]));d;';
+  }
+  app.endUndoGroup();
+  return true;
+};
+
+/** Shake: expressions on the rig's shake null (or a new parent null for a plain camera). */
+KX.camShake = function (p) {
+  var comp = KX._comp(null, false);
+  app.beginUndoGroup('Kinetix Camera Shake');
+  var rig = KX._rig(comp), sh = null;
+  if (rig) sh = KX._byName(comp, rig.name + ' Shake');
+  if (!sh) {
+    var cam = KX._camExprName(comp);
+    sh = KX._newNull3D(comp, KX._uniqueName(comp, 'KX Camera Shake'), null);
+    sh.moveBefore(cam);
+    if (cam.parent) sh.parent = cam.parent;
+    cam.parent = sh;
+  }
+  KX._ensureSlider(sh, 'KX Shake Amount', p.amount);
+  KX._ensureSlider(sh, 'KX Shake Speed', p.speed);
+  KX._ensureSlider(sh, 'KX Shake Seed', p.seed);
+  var tf = sh.property('ADBE Transform Group');
+  if (p.clear) { tf.property('ADBE Position').expression = ''; tf.property('ADBE Rotate X').expression = ''; tf.property('ADBE Rotate Y').expression = ''; tf.property('ADBE Rotate Z').expression = ''; }
+  else {
+    tf.property('ADBE Position').expression = p.pos;
+    tf.property('ADBE Rotate X').expression = p.rx;
+    tf.property('ADBE Rotate Y').expression = p.ry;
+    tf.property('ADBE Rotate Z').expression = p.rz;
+    if (p.atTime) { sh.inPoint = 0; }
+  }
+  app.endUndoGroup();
+  return { layer: sh.name };
+};
+
+/** Fit the rig (or camera) so the selected layers fill the frame. */
+KX.camFrame = function (p) {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, xs = [], ys = [], zs = [];
+  for (var i = 0; i < sel.length; i++) {
+    var L = sel[i];
+    if (L instanceof CameraLayer || L instanceof LightLayer || L.name.indexOf('KX Camera') === 0) continue;
+    var r = L.sourceRectAtTime(comp.time, false), tf = L.property('ADBE Transform Group');
+    var pos = tf.property('ADBE Position').valueAtTime(comp.time, false), sc = tf.property('ADBE Scale').valueAtTime(comp.time, false);
+    var w = r.width * Math.abs(sc[0]) / 100, h = r.height * Math.abs(sc[1]) / 100;
+    xs.push(pos[0] - w / 2, pos[0] + w / 2); ys.push(pos[1] - h / 2, pos[1] + h / 2); zs.push(pos.length > 2 ? pos[2] : 0);
+  }
+  if (!xs.length) throw new Error('Select the layers to frame.');
+  var mn = function (a) { var m = a[0]; for (var k = 1; k < a.length; k++) if (a[k] < m) m = a[k]; return m; };
+  var mx = function (a) { var m = a[0]; for (var k = 1; k < a.length; k++) if (a[k] > m) m = a[k]; return m; };
+  var cx = (mn(xs) + mx(xs)) / 2, cy = (mn(ys) + mx(ys)) / 2, cz = 0;
+  for (var z = 0; z < zs.length; z++) cz += zs[z] / zs.length;
+  var bw = (mx(xs) - mn(xs)) * (p.margin || 1.15), bh = (mx(ys) - mn(ys)) * (p.margin || 1.15);
+  var rig = KX._rig(comp);
+  if (!rig) { KX.camRig({ lens: 50 }); rig = KX._rig(comp); }
+  var mm = KX._slv(rig, 'Focal Length (mm)').valueAtTime(comp.time, false), zoom = comp.width * mm / 36;
+  var dist = Math.max((bw / 2) * zoom / (comp.width / 2), (bh / 2) * zoom / (comp.height / 2));
+  app.beginUndoGroup('Kinetix Frame');
+  var pp = rig.property('ADBE Transform Group').property('ADBE Position'), dd = KX._slv(rig, 'Distance');
+  if (pp.numKeys > 0) pp.setValueAtTime(comp.time, [cx, cy, cz]); else pp.setValue([cx, cy, cz]);
+  if (dd.numKeys > 0) dd.setValueAtTime(comp.time, dist); else dd.setValue(dist);
+  app.endUndoGroup();
+  return { center: [cx, cy, cz], distance: dist };
+};
+
+/** Visit the selected layers one by one (selection order). */
+KX.camTour = function (p) {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, stops = [];
+  for (var i = 0; i < sel.length; i++) {
+    var L = sel[i];
+    if (L instanceof CameraLayer || L instanceof LightLayer || L.name.indexOf('KX Camera') === 0) continue;
+    var r = L.sourceRectAtTime(comp.time, false), tf = L.property('ADBE Transform Group');
+    var pos = tf.property('ADBE Position').valueAtTime(comp.time, false), sc = tf.property('ADBE Scale').valueAtTime(comp.time, false);
+    stops.push({ pos: [pos[0], pos[1], pos.length > 2 ? pos[2] : 0], w: r.width * Math.abs(sc[0]) / 100, h: r.height * Math.abs(sc[1]) / 100 });
+  }
+  if (stops.length < 2) throw new Error('Select two or more layers (in the order to visit them).');
+  var rig = KX._rig(comp);
+  if (!rig) { KX.camRig({ lens: 50 }); rig = KX._rig(comp); }
+  app.beginUndoGroup('Kinetix Camera Tour');
+  var pp = rig.property('ADBE Transform Group').property('ADBE Position'), dd = KX._slv(rig, 'Distance'), oo = KX._slv(rig, 'Orbit');
+  var mm = KX._slv(rig, 'Focal Length (mm)').valueAtTime(comp.time, false), zoom = comp.width * mm / 36;
+  var t = comp.time;
+  var bz = p.bezier || [0.65, 0, 0.25, 1];
+  for (var s = 0; s < stops.length; s++) {
+    var S = stops[s];
+    var dist = Math.max((S.w * 0.65) * zoom / (comp.width / 2), (S.h * 0.65) * zoom / (comp.height / 2));
+    var orbit = p.orbit ? (s % 2 ? -1 : 1) * p.orbit : 0;
+    var keys = [[pp, S.pos], [dd, dist], [oo, orbit]];
+    for (var q = 0; q < keys.length; q++) {
+      var a = keys[q][0].addKey(t); keys[q][0].setValueAtKey(a, keys[q][1]);
+      var b = keys[q][0].addKey(t + p.hold); keys[q][0].setValueAtKey(b, keys[q][1]);
+    }
+    t += p.hold + (s < stops.length - 1 ? p.travel : 0);
+  }
+  KX._linearSpatial(pp);
+  var props = [pp, dd, oo];
+  for (var z = 0; z < props.length; z++) {
+    var pr = props[z];
+    for (var k = 1; k <= pr.numKeys; k++) {
+      pr.setInterpolationTypeAtKey(k, KeyframeInterpolationType.BEZIER, KeyframeInterpolationType.BEZIER);
+      var e1 = [new KeyframeEase(0, Math.max(0.1, (1 - bz[2]) * 100))], e2 = [new KeyframeEase(0, Math.max(0.1, bz[0] * 100))];
+      pr.setTemporalEaseAtKey(k, e1, e2);
+    }
+  }
+  KX._ensureDuration(comp, t + 0.5);
+  app.endUndoGroup();
+  return { stops: stops.length, end: t };
+};
+
+/** The rig follows a layer with smoothing. */
+KX.camFollow = function (p) {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, target = null;
+  for (var i = 0; i < sel.length; i++) if (!(sel[i] instanceof CameraLayer) && sel[i].name.indexOf('KX Camera') !== 0) { target = sel[i]; break; }
+  var rig = KX._rig(comp);
+  if (!rig) { KX.camRig({ lens: 50 }); rig = KX._rig(comp); }
+  app.beginUndoGroup('Kinetix Follow');
+  var pp = rig.property('ADBE Transform Group').property('ADBE Position');
+  if (p.off || !target) { pp.expression = ''; app.endUndoGroup(); return { following: null }; }
+  pp.expression = '// KX-FOLLOW\nvar L=thisComp.layer(' + KXJSON.stringify(target.name) + '),s=' + (p.smooth || 0.3) + ',n=8,acc=[0,0,0];' +
+    'for(var i=0;i<n;i++){var t=time-s*i/n;var q=L.toWorld(L.anchorPoint,t);acc=add(acc,q);}mul(acc,1/n);';
+  app.endUndoGroup();
+  return { following: target.name };
+};
+
+/** Opacity expressions on the selected 3D layers: hide behind camera, or fade/blur with distance. */
+KX.camDepthFx = function (p) {
+  var comp = KX._comp(null, false);
+  var sel = comp.selectedLayers, n = 0;
+  app.beginUndoGroup('Kinetix Depth FX');
+  for (var i = 0; i < sel.length; i++) {
+    var L = sel[i];
+    if (L instanceof CameraLayer || L instanceof LightLayer) continue;
+    if (!L.threeDLayer) L.threeDLayer = true;
+    var op = L.property('ADBE Transform Group').property('ADBE Opacity');
+    var D = 'var C=thisComp.activeCamera,c=C.toWorld([0,0,0]),d=length(toWorld(anchorPoint),c);';
+    if (p.mode === 'cull') op.expression = '// KX-CULL\nvar C=thisComp.activeCamera;var v=sub(toWorld(anchorPoint),C.toWorld([0,0,0]));dot(v,C.toWorldVec([0,0,1]))<0?0:value;';
+    else if (p.mode === 'fade') op.expression = '// KX-DEPTH\n' + D + 'value*linear(d,' + p.near + ',' + p.far + ',1,0);';
+    else if (p.mode === 'fog') {
+      op.expression = '// KX-DEPTH\n' + D + 'value*linear(d,' + p.near + ',' + p.far + ',1,0.35);';
+      var fx = L.property('ADBE Effect Parade');
+      var bl = null;
+      for (var j = 1; j <= fx.numProperties; j++) if (fx.property(j).name === 'KX Depth Blur') bl = fx.property(j);
+      if (!bl) { bl = fx.addProperty('ADBE Box Blur2'); bl.name = 'KX Depth Blur'; }
+      bl.property(1).expression = '// KX-DEPTH\n' + D + 'linear(d,' + p.near + ',' + p.far + ',0,' + (p.blur || 20) + ');';
+    } else op.expression = '';
+    n++;
+  }
+  app.endUndoGroup();
+  return { layers: n };
+};
+
+KX.camMotionBlur = function (p) {
+  var comp = KX._comp(null, false);
+  app.beginUndoGroup('Kinetix Motion Blur');
+  comp.motionBlur = p.on;
+  if (p.angle) comp.shutterAngle = p.angle;
+  var n = 0;
+  for (var i = 1; i <= comp.numLayers; i++) { var L = comp.layer(i); if (L instanceof CameraLayer || L instanceof LightLayer) continue; if (L.threeDLayer || L.selected) { L.motionBlur = p.on; n++; } }
+  app.endUndoGroup();
+  return { layers: n };
+};
+
+/** Bake every expression on the rig / camera layers into per-frame keyframes. */
+KX.camBake = function () {
+  var comp = KX._comp(null, false);
+  var rig = KX._rig(comp), layers = [];
+  for (var i = 1; i <= comp.numLayers; i++) { var L = comp.layer(i); if (L.name.indexOf('KX Camera') === 0 || L instanceof CameraLayer) layers.push(L); }
+  app.beginUndoGroup('Kinetix Bake Camera');
+  var n = 0, t0 = comp.workAreaStart, t1 = comp.workAreaStart + comp.workAreaDuration, fd = comp.frameDuration;
+  var bake = function (prop) {
+    if (prop.propertyType === PropertyType.PROPERTY) {
+      if (!prop.expressionEnabled || !prop.expression || !prop.canVaryOverTime) return;
+      var times = [], vals = [];
+      for (var t = t0; t <= t1 + 1e-6; t += fd) { times.push(t); vals.push(prop.valueAtTime(t, false)); }
+      prop.expression = '';
+      while (prop.numKeys > 0) prop.removeKey(1);
+      prop.setValuesAtTimes(times, vals);
+      n++;
+    } else for (var k = 1; k <= prop.numProperties; k++) bake(prop.property(k));
+  };
+  for (var j = 0; j < layers.length; j++) { bake(layers[j].property('ADBE Transform Group')); try { bake(layers[j].property('ADBE Camera Options Group')); } catch (e) {} }
+  app.endUndoGroup();
+  return { props: n };
+};
+
+/** Smooth the selected keyframed properties (removes jitter between keys). */
+KX.camSmooth = function (p) {
+  var comp = KX._comp(null, false);
+  var props = comp.selectedProperties, n = 0, s = p.strength || 0.5;
+  app.beginUndoGroup('Kinetix Smooth');
+  for (var i = 0; i < props.length; i++) {
+    var pr = props[i];
+    if (pr.propertyType !== PropertyType.PROPERTY || pr.numKeys < 3) continue;
+    var vals = [];
+    for (var k = 1; k <= pr.numKeys; k++) vals.push(pr.keyValue(k));
+    for (var k2 = 2; k2 < pr.numKeys; k2++) {
+      var a = vals[k2 - 2], b = vals[k2 - 1], c = vals[k2], v;
+      if (b instanceof Array) { v = []; for (var d = 0; d < b.length; d++) v.push(b[d] * (1 - s) + (a[d] + c[d]) / 2 * s); }
+      else v = b * (1 - s) + (a + c) / 2 * s;
+      pr.setValueAtKey(k2, v);
+    }
+    n++;
+  }
+  app.endUndoGroup();
+  if (!n) throw new Error('Select properties with 3 or more keyframes.');
+  return { props: n };
+};
+
+/** Cut between the selected cameras at the comp markers (in selection order). */
+KX.camCuts = function () {
+  var comp = KX._comp(null, false);
+  var cams = [];
+  for (var i = 0; i < comp.selectedLayers.length; i++) if (comp.selectedLayers[i] instanceof CameraLayer) cams.push(comp.selectedLayers[i]);
+  if (cams.length < 2) throw new Error('Select two or more cameras (in shot order).');
+  var mk = comp.markerProperty, times = [];
+  for (var m = 1; m <= mk.numKeys; m++) times.push(mk.keyTime(m));
+  if (times.length < cams.length - 1) throw new Error('Add ' + (cams.length - 1) + ' comp markers where the cuts should happen.');
+  app.beginUndoGroup('Kinetix Camera Cuts');
+  for (var c = 0; c < cams.length; c++) {
+    cams[c].inPoint = c === 0 ? 0 : times[c - 1];
+    cams[c].outPoint = c === cams.length - 1 ? comp.duration : times[c];
+  }
+  app.endUndoGroup();
+  return { cameras: cams.length };
+};
