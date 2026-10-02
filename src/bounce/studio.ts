@@ -9,8 +9,10 @@ import { uid, vdist, clamp, type Vec } from '../core/math';
 import { sample, trackOf, durationOf, buildKeyed, physicsToKeyed, effectiveTravel } from './solver';
 import { buildPayload, type ExportStyle, type ExportTarget } from './export';
 import { call, inAE } from '../core/ae-bridge';
+import { ActionBar, Picks } from '../ui/flow';
 import type { Studio } from '../main';
 
+type SoftGen = { count: number; height: number; dist: number; hDecay: number; dDecay: number };
 const S = () => store.state;
 const B = () => store.state.bounce;
 
@@ -47,17 +49,20 @@ export class BounceStudio implements Studio {
     this.transport = Transport({ marks: () => this.marks() });
 
     this.toolbar = h('div', { class: 'toolbar' });
+    const fold = <T extends HTMLElement>(el: T) => { el.classList.add('collapsed'); return el; };
     const left = h('div', { class: 'side' },
-      SceneSection(),
-      this.objectsSection(),
-      CompSection(),
-      ViewSection([
+      this.quickSection(),
+      fold(this.objectsSection()),
+      h('div', { class: 'insp-slot' }),
+      fold(SceneSection()),
+      fold(CompSection()),
+      fold(ViewSection([
         Toggle('Motion trail', () => S().view.trail, (v) => store.silent((s) => { s.view.trail = v; })),
         Toggle('Speed heatmap', () => S().view.heat, (v) => store.silent((s) => { s.view.heat = v; })),
         Slider({ label: 'Onion skin', min: 0, max: 12, get: () => S().view.onion, set: (v) => store.silent((s) => { s.view.onion = v; }) }),
-      ]),
-      GuideSection(),
-      this.exportSection(),
+      ])),
+      fold(GuideSection()),
+      fold(this.exportSection()),
     );
     this.right = h('div', { class: 'side right' });
     const stage = h('div', { class: 'stage' },
@@ -65,15 +70,18 @@ export class BounceStudio implements Studio {
       this.vp.el,
       h('div', { class: 'stage-hint' }, 'Click to place the start, then click to add bounces · drag points & arc handles · Space play · ←/→ frame · Shift+←/→ jump bounce · scroll zoom · Alt-drag pan'),
       this.transport.el,
+      ActionBar({ label: 'Send to After Effects', icon: 'send', need: () => (this.exportTarget === 'selected' ? 'layers' : 'comp'), run: () => this.export(false) }),
     );
     // move hint above the transport
     stage.insertBefore(stage.querySelector('.stage-hint')!, this.transport.el);
-    (stage.querySelector('.stage-hint') as HTMLElement).style.bottom = '68px';
+    (stage.querySelector('.stage-hint') as HTMLElement).style.bottom = '128px';
     this.el = h('div', { class: 'view' }, left, stage, this.right);
 
     store.subscribe(() => this.onState());
     clock.on(() => { if (this.active) this.vp.request(); });
     this.onState();
+    // never open on an empty canvas
+    if (!this.obj()?.start) this.generate();
   }
 
   private active = false;
@@ -308,6 +316,26 @@ export class BounceStudio implements Studio {
   }
 
   private gen = { count: 6, height: 520, dist: 260, hDecay: 55, dDecay: 85, dir: 1 as 1 | -1, floor: 0 };
+  private quick = 'drop';
+  /** One click: a complete, good-looking bounce. */
+  private quickSection() {
+    const QUICK: { id: string; label: string; sub: string; g: Partial<SoftGen> }[] = [
+      { id: 'drop', label: 'Ball drop', sub: 'classic, 6 bounces', g: { count: 6, height: 520, dist: 260, hDecay: 55, dDecay: 85 } },
+      { id: 'big', label: 'Big bounce', sub: 'tall and energetic', g: { count: 8, height: 850, dist: 320, hDecay: 62, dDecay: 88 } },
+      { id: 'hops', label: 'Little hops', sub: 'small, quick, playful', g: { count: 10, height: 180, dist: 130, hDecay: 72, dDecay: 92 } },
+      { id: 'land', label: 'Drop & land', sub: 'one hit, settles fast', g: { count: 3, height: 600, dist: 80, hDecay: 25, dDecay: 60 } },
+      { id: 'float', label: 'Floaty', sub: 'long soft arcs', g: { count: 5, height: 420, dist: 380, hDecay: 70, dDecay: 95 } },
+      { id: 'heavy', label: 'Heavy', sub: 'barely bounces', g: { count: 2, height: 500, dist: 120, hDecay: 15, dDecay: 50 } },
+    ];
+    const picks = Picks(QUICK, { isOn: (t) => t.id === this.quick, onPick: (t) => { this.quick = t.id; Object.assign(this.gen, t.g); this.generate(); clock.play(); }, min: 92 });
+    return Section('Quick bounce', [
+      picks.el,
+      Slider({ label: 'Height', min: 50, max: 1500, get: () => this.gen.height, set: (v, f) => { this.gen.height = v; if (f) this.generate(); } }),
+      Slider({ label: 'Bounciness', min: 5, max: 95, unit: ' %', get: () => this.gen.hDecay, set: (v, f) => { this.gen.hDecay = v; if (f) this.generate(); } }),
+      Seg([{ value: '1', label: 'Left → right' }, { value: '-1', label: 'Right → left' }], () => String(this.gen.dir) as '1' | '-1', (v) => { this.gen.dir = +v as 1 | -1; this.generate(); refreshAll(); }),
+      h('div', { class: 'hint' }, 'Or click on the canvas to place your own start and bounces.'),
+    ], { color: 'var(--lime)' });
+  }
   private generatorSection() {
     const g = this.gen;
     if (!g.floor) g.floor = S().comp.h - 140;
@@ -344,7 +372,6 @@ export class BounceStudio implements Studio {
     });
     store.silent((s) => { s.bounce.selBounce = 0; });
     clock.seek(0);
-    toast(`Generated ${g.count} bounces`);
   }
 
   private physicsSection() {
@@ -381,7 +408,7 @@ export class BounceStudio implements Studio {
       Toggle('Preserve volume', () => d().volume, (v) => this.edit((x) => { x.deform.volume = v; })),
       Slider({ label: 'Recovery overshoot', min: 0, max: 1, step: 0.01, get: () => d().recover, set: (v, f) => this.edit((x) => { x.deform.recover = v; }, f), begin: () => store.begin() }),
       Slider({ label: 'Anticipation boost', min: 0, max: 2, step: 0.01, get: () => d().anticipate, set: (v, f) => this.edit((x) => { x.deform.anticipate = v; }, f), begin: () => store.begin() }),
-    ], { color: 'var(--violet)', collapsed: false });
+    ], { color: 'var(--violet)', collapsed: true });
   }
 
   private rotationSection() {

@@ -1,5 +1,5 @@
-import { h, Section, Btn, Field, Select, toast, clear, ColorField, pickFile, downloadText, TextInput, setPalette } from '../ui/kit';
-import { Page, Group } from '../core/page';
+import { h, Btn, Field, Select, toast, clear, ColorField, pickFile, downloadText, TextInput, setPalette } from '../ui/kit';
+import { Flow, Step, More } from '../ui/flow';
 import { call } from '../core/ae-bridge';
 import { registerCommands } from '../core/commands';
 import { brands, activeBrand, setActive, updateBrand, addBrand, removeBrand, importBrands, exportBrands, onBrand, extractPalette } from './brand';
@@ -16,7 +16,7 @@ export class BrandStudio implements Studio {
 
   constructor() {
     this.body = h('div', { class: 'stack', style: { gap: '20px' } });
-    this.el = Page({ title: 'Brand Kit', sub: 'Colours, gradients, fonts, logo and motion feel — shared by every Kinetix section.', main: [this.body] }).el;
+    this.el = Flow({ title: 'Brand', sub: 'Your colours, fonts and logo. Every Kinetix section uses them, and you can drop them on selected layers in one click.', body: [this.body] }).el;
     onBrand(() => { this.render(); setPalette(activeBrand().colors); });
     setPalette(activeBrand().colors);
     this.render();
@@ -33,7 +33,7 @@ export class BrandStudio implements Studio {
     clear(this.body);
     const b = activeBrand();
     // brand switcher
-    const sw = h('div', { class: 'panel-card' },
+    const sw = h('div', { class: 'stack' },
       h('div', { class: 'row' },
         Field('Active brand', Select(brands().map((x) => ({ value: x.id, label: x.name })), () => b.id, (v) => setActive(v))),
         Field('Name', TextInput({ get: () => b.name, set: (v) => updateBrand((x) => { x.name = v || x.name; }) }))),
@@ -51,7 +51,7 @@ export class BrandStudio implements Studio {
       h('div', { class: 'row' }, Btn('Apply', () => this.applyColor(c), { size: 'sm', variant: 'soft' }), Btn('', () => updateBrand((x) => { x.colors.splice(i, 1); }), { size: 'sm', icon: 'x', title: 'Remove' })))));
     colors.appendChild(h('div', { class: 'tile', style: { display: 'grid', placeItems: 'center', minHeight: '120px' }, onclick: () => updateBrand((x) => { x.colors.push('#ffffff'); }) }, '+ Add colour'));
     // logo + palette extraction
-    const logo = h('div', { class: 'panel-card' },
+    const logo = h('div', { class: 'stack' },
       h('div', { class: 'hstack' },
         b.logo ? h('img', { src: b.logo, style: { width: '84px', height: '84px', objectFit: 'contain', borderRadius: '12px', background: 'var(--bg-deep)' } }) : h('div', { class: 'empty', style: { width: '84px' } }, 'No logo'),
         h('div', { class: 'stack grow' },
@@ -88,7 +88,7 @@ export class BrandStudio implements Studio {
       return inp;
     };
     const dl = h('datalist', { id: 'kx-brand-fonts' });
-    const feel = h('div', { class: 'panel-card' },
+    const feel = h('div', { class: 'stack' },
       h('div', { class: 'row' },
         Field('Heading font', h('div', null, fontSel('heading'))),
         Field('Body font', h('div', null, fontSel('body')))), dl,
@@ -96,7 +96,11 @@ export class BrandStudio implements Studio {
         Btn('Heading → selected text', () => this.applyFont('heading'), { size: 'sm', variant: 'soft' }),
         Btn('Body → selected text', () => this.applyFont('body'), { size: 'sm' })),
       Field('Signature ease', Select(EASE_LIBRARY.map((e) => ({ value: e.id, label: `${e.group} · ${e.label}` })), () => activeBrand().ease, (v) => updateBrand((x) => { x.ease = v; }))));
-    this.body.append(sw, Group('Colours', [colors]), Group('Logo & palette', [logo]), Group('Gradients', [grads]), Group('Typography & motion', [feel]));
+    this.body.append(
+      Step(1, 'Colours', [colors], 'Apply = fill the selected layers'),
+      Step(2, 'Fonts', [feel]),
+      Step(3, 'Logo', [logo], 'pull the colours out of your logo'),
+      More('brand-more', [sw, h('div', { class: 'lbl' }, 'Brand gradients'), grads], 'Several brands, import / export, gradients'));
   }
 
   private async loadFonts() {

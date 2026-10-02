@@ -1,5 +1,6 @@
-import { h, Section, Slider, Seg, Btn, Toggle, toast, refreshAll, clear, Chips } from '../ui/kit';
-import { Page, Group } from '../core/page';
+import { h, Seg, Btn, Toggle, toast, refreshAll, clear, Chips } from '../ui/kit';
+import { Group } from '../core/page';
+import { Flow, More, Tabs } from '../ui/flow';
 import { call, inAE, nodeRequire } from '../core/ae-bridge';
 import { registerCommands } from '../core/commands';
 import { GRADIENTS, GRADIENT_CATS, cssOf, renderPng, type Gradient } from './gradients';
@@ -22,22 +23,23 @@ export class StyleStudio implements Studio {
   private animate = false;
   private stack = false;
   private favs = new Set<string>(JSON.parse(localStorage.getItem('kinetix.grad.favs') || '[]'));
+  private lastStyle: StyleDef | null = null;
 
   constructor() {
     this.body = h('div', { class: 'stack', style: { gap: '20px' } });
-    const tabs = Seg<Tab>([{ value: 'styles', label: 'Layer Styles' }, { value: 'gradients', label: `Gradients · ${GRADIENTS.length}` }], () => this.tab, (v) => { this.tab = v; this.render(); });
-    const right = [
-      Section('Brand colours', [
-        (() => { const box = h('div', { class: 'swatches' }); const fill = () => { box.innerHTML = ''; activeBrand().colors.forEach((c) => box.appendChild(h('button', { style: { background: c, width: '26px', height: '26px' }, title: c }))); }; fill(); onBrand(fill); return box; })(),
-        h('div', { class: 'hint' }, 'Styles use your active Brand Kit colours (edit them in the Brand section).'),
-      ], { color: 'var(--lime)' }),
-      Section('Options', [
-        Toggle('Stack on existing styles', () => this.stack, (v) => { this.stack = v; refreshAll(); }),
-        Toggle('Animate gradient (slow spin)', () => this.animate, (v) => { this.animate = v; refreshAll(); }),
-        Btn('Remove Kinetix styles', () => this.clearStyles(), { variant: 'danger', size: 'sm' }),
-      ], { color: 'var(--violet)' }),
-    ];
-    this.el = Page({ title: 'Style', sub: 'One-click looks (Deep Glow 2, bevels, chrome, neon…) and 500+ gradients for any layer.', extra: h('div', { style: { width: '320px', maxWidth: '100%' } }, tabs), main: [this.body], right }).el;
+    const tabs = Tabs<Tab>([{ id: 'styles', label: 'Looks' }, { id: 'gradients', label: `Gradients · ${GRADIENTS.length}` }], () => this.tab, (v) => { this.tab = v; this.render(); });
+    const opts = More('style-opts', [
+      Toggle('Keep existing Kinetix looks (stack)', () => this.stack, (v) => { this.stack = v; refreshAll(); }),
+      Toggle('Animate gradient (slow spin)', () => this.animate, (v) => { this.animate = v; refreshAll(); }),
+      (() => { const box = h('div', { class: 'swatches' }); const fill = () => { box.innerHTML = ''; activeBrand().colors.forEach((c) => box.appendChild(h('button', { style: { background: c, width: '26px', height: '26px' }, title: c }))); }; fill(); onBrand(fill); return box; })(),
+      h('div', { class: 'hint' }, 'Looks use your Brand colours (above). Change them in the Brand section.'),
+      Btn('Remove Kinetix looks from selected layers', () => this.clearStyles(), { variant: 'danger', size: 'sm' }),
+    ], 'Options');
+    this.el = Flow({
+      title: 'Style', sub: 'Select layers in After Effects, then click a look or a gradient — it is applied instantly with normal, editable effects.',
+      tabs, body: [this.body, opts],
+      action: { label: 'Apply again', icon: 'send', need: 'layers', run: () => (this.tab === 'styles' ? (this.lastStyle ? this.applyStyle(this.lastStyle) : toast('Click a look first', 'info')) : this.applyGradient()) },
+    }).el;
     this.render();
     registerCommands([
       ...STYLES.map((s) => ({ id: 'style.' + s.id, label: 'Style: ' + s.label, group: 'Style', keywords: s.sub, run: () => this.applyStyle(s) })),
@@ -64,7 +66,7 @@ export class StyleStudio implements Studio {
       const grid = h('div', { class: 'tiles', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))' } });
       for (const s of STYLES.filter((x) => x.group === g)) {
         const t = h('div', { class: 'tile' }, h('div', { class: 'tile-prev' }, this.stylePreview(s)), h('div', { class: 'tile-label' }, s.label), h('div', { class: 'tile-sub' }, s.sub));
-        t.addEventListener('click', () => this.applyStyle(s));
+        t.addEventListener('click', () => { this.lastStyle = s; this.body.querySelectorAll('.tile').forEach((x) => x.classList.remove('on')); t.classList.add('on'); this.applyStyle(s); });
         grid.appendChild(t);
       }
       this.body.appendChild(Group(g, [grid]));
@@ -114,8 +116,7 @@ export class StyleStudio implements Studio {
         const t = h('div', { class: 'tile' + (g.id === this.gSel.id ? ' on' : ''), title: `${g.name} · ${g.cat}` },
           h('div', { class: 'tile-prev', style: { background: cssOf(g), height: '58px' } }),
           h('div', { class: 'tile-label' }, g.name));
-        t.addEventListener('click', () => { this.gSel = g; grid.querySelectorAll('.tile').forEach((x) => x.classList.remove('on')); t.classList.add('on'); refreshAll(); });
-        t.addEventListener('dblclick', () => this.applyGradient());
+        t.addEventListener('click', () => { this.gSel = g; grid.querySelectorAll('.tile').forEach((x) => x.classList.remove('on')); t.classList.add('on'); refreshAll(); this.applyGradient(); });
         grid.appendChild(t);
       }
       if (!list.length) grid.appendChild(h('div', { class: 'empty' }, 'Nothing here yet'));
@@ -123,16 +124,12 @@ export class StyleStudio implements Studio {
     search.addEventListener('input', () => { this.gQuery = search.value.toLowerCase(); draw(); });
     draw();
     this.body.append(
-      h('div', { class: 'panel-card' },
-        search,
+      h('div', { class: 'step' },
+        h('div', { class: 'row wrap' }, search, Seg<GradTarget>([{ value: 'image', label: 'Full gradient' }, { value: 'fill', label: 'Editable 2-colour' }, { value: 'background', label: 'Background' }], () => this.gTarget, (v) => { this.gTarget = v; refreshAll(); })),
         Chips(['All', 'Favorites', 'Brand', ...GRADIENT_CATS].map((c) => ({ value: c, label: c })), () => this.gCat, (v) => { this.gCat = v; draw(); refreshAll(); }),
-        h('div', { class: 'row' },
-          Seg<GradTarget>([{ value: 'image', label: 'Full gradient' }, { value: 'fill', label: 'Editable 2-color' }, { value: 'background', label: 'Background' }], () => this.gTarget, (v) => { this.gTarget = v; refreshAll(); }),
-          h('div', { class: 'hstack' },
-            Btn('★', () => { this.favs.has(this.gSel.id) ? this.favs.delete(this.gSel.id) : this.favs.add(this.gSel.id); localStorage.setItem('kinetix.grad.favs', JSON.stringify([...this.favs])); toast('Favorites updated'); }, { size: 'sm', title: 'Favorite' }),
-            Btn('+ Brand', () => { updateBrand((b) => { if (!b.gradients.includes(this.gSel.id)) b.gradients.push(this.gSel.id); }); toast('Added to brand'); }, { size: 'sm' }))),
-        Btn('Apply gradient to selected layers', () => this.applyGradient(), { variant: 'primary', icon: 'send' }),
-        h('div', { class: 'hint' }, 'Full gradient = any number of colours, radial & mesh (placed as a matte layer that follows the target). Editable 2-color = Gradient Ramp on the layer itself. Double-click a tile to apply.')),
+        h('div', { class: 'hstack' }, h('div', { class: 'hint grow' }, 'Click a gradient to apply it to the selected layers.'),
+          Btn('★', () => { this.favs.has(this.gSel.id) ? this.favs.delete(this.gSel.id) : this.favs.add(this.gSel.id); localStorage.setItem('kinetix.grad.favs', JSON.stringify([...this.favs])); toast('Favorites updated'); }, { size: 'sm', title: 'Favorite the last gradient' }),
+          Btn('+ Brand', () => { updateBrand((b) => { if (!b.gradients.includes(this.gSel.id)) b.gradients.push(this.gSel.id); }); toast('Added to brand'); }, { size: 'sm' }))),
       grid,
     );
   }

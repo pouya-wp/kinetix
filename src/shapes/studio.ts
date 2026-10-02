@@ -5,6 +5,7 @@ import { Transport } from '../core/transport';
 import { SceneSection, CompSection, ViewSection, GuideSection } from '../core/common-ui';
 import { h, Section, Slider, Toggle, Seg, Btn, ColorField, Swatches, TextInput, Field, Select, clear, toast, icon, refreshAll, PALETTE, Chips, modal, pickFile } from '../ui/kit';
 import { tracedText, tracedImage, chain, polyPath, type Piece } from './trace';
+import { ActionBar, More } from '../ui/flow';
 import { CurveEditor } from '../ui/curve';
 import { uid, vdist, type Vec } from '../core/math';
 import { ShapeEngine, keyState, BEHAVIORS } from './engine';
@@ -57,22 +58,26 @@ export class ShapesStudio implements Studio {
     this.transport = Transport({ marks: () => this.marks() });
     this.toolbar = h('div', { class: 'toolbar' });
     this.right = h('div', { class: 'side right' });
+    const fold = <T extends HTMLElement>(el: T) => { el.classList.add('collapsed'); return el; };
     const left = h('div', { class: 'side' },
-      SceneSection(),
-      this.itemsSection(),
       this.librarySection(),
-      this.groupsSection(),
-      CompSection({ duration: true }),
-      ViewSection([Toggle('Show merge members', () => this.showMembers, (v) => { this.showMembers = v; refreshAll(); this.vp.request(); })]),
-      GuideSection(),
-      this.exportSection(),
+      this.itemsSection(),
+      h('div', { class: 'insp-slot' }),
+      fold(this.groupsSection()),
+      fold(SceneSection()),
+      fold(CompSection({ duration: true })),
+      fold(ViewSection([Toggle('Show merge members', () => this.showMembers, (v) => { this.showMembers = v; refreshAll(); this.vp.request(); })])),
+      fold(GuideSection()),
+      fold(this.exportSection()),
     );
     const stage = h('div', { class: 'stage' },
       h('div', { class: 'stage-top' }, this.toolbar, this.vp.zoomEl),
       this.vp.el,
       h('div', { class: 'stage-hint', style: { bottom: '68px' } }, 'Draw with the tools above · select & drag to move (auto-keys at the playhead) · corner handles scale, top handle rotates · K = add key · Pen: click/drag points, double-click to close'),
       this.transport.el,
+      ActionBar({ label: 'Send to After Effects', icon: 'send', need: 'comp', run: () => this.export(this.exportOnlySel) }),
     );
+    (stage.querySelector('.stage-hint') as HTMLElement).style.bottom = '128px';
     this.el = h('div', { class: 'view' }, left, stage, this.right);
     store.subscribe(() => this.onState());
     clock.on(() => { if (this.active) this.vp.request(); });
@@ -199,9 +204,9 @@ export class ShapesStudio implements Studio {
   private librarySection() {
     const grid = h('div', { class: 'chips' }, ...FORMS.map((f) => h('button', { class: 'chip', onclick: () => this.addForm(f.id) }, f.label)));
     const presets = h('div', { class: 'chips' }, ...PRESETS.map((p) => h('button', { class: 'chip', onclick: () => this.loadPreset(p.id) }, p.label)));
-    return Section('Library', [
-      h('div', { class: 'lbl' }, 'Add shape'), grid,
-      h('div', { class: 'lbl' }, 'Demo scenes'), presets,
+    return Section('Start here', [
+      h('div', { class: 'lbl' }, 'Add a shape'), grid,
+      h('div', { class: 'lbl' }, 'Or start from a ready scene'), presets,
       h('div', { class: 'hint' }, 'Demo scenes replace the current shapes (undo restores them).'),
     ], { color: 'var(--violet)' });
   }
@@ -241,10 +246,9 @@ export class ShapesStudio implements Studio {
 
   private exportSection() {
     const scope = { sel: false };
-    return Section('Export', [
+    return Section('Export options', [
       Field('Keyframes', Seg([{ value: 'auto', label: 'Smart', title: 'Editable path keys when possible, baked when behaviors/merge are used' }, { value: 'baked', label: 'Bake every frame' }], () => this.exportMode, (v) => { this.exportMode = v; refreshAll(); })),
-      Toggle('Only the selected shape / group', () => scope.sel, (v) => { scope.sel = v; refreshAll(); }),
-      Btn('Send to After Effects', () => this.export(scope.sel), { variant: 'primary', size: 'lg', block: true, icon: 'send' }),
+      Toggle('Only the selected shape / group', () => this.exportOnlySel, (v) => { this.exportOnlySel = v; refreshAll(); }),
       h('div', { class: 'hint' }, 'Every shape (and every merge group) becomes its own shape layer — ready for your glass plugin or any effect.'),
     ], { color: 'var(--lime)' });
   }
@@ -360,15 +364,18 @@ export class ShapesStudio implements Studio {
     }
     const I = () => this.sel() ?? it;
     this.right.append(
-      Section('Shape', [
-        Field('Name', TextInput({ get: () => I().name, set: (v) => this.editItem((x) => { x.name = v || x.name; }) })),
-        Field('Fill', ColorField(() => I().color, (v, f) => this.editItem((x) => { x.color = v; }, f), () => store.begin())),
+      Section('Colour', [
         Swatches((c) => this.editItem((x) => { x.color = c; })),
-        h('div', { class: 'row' },
-          Field('Stroke', ColorField(() => I().stroke, (v, f) => this.editItem((x) => { x.stroke = v; }, f), () => store.begin())),
-          Slider({ label: 'Width', min: 0, max: 40, step: 0.5, get: () => I().strokeW, set: (v, f) => this.editItem((x) => { x.strokeW = v; }, f), begin: () => store.begin() })),
-        Slider({ label: 'Opacity (%)', min: 0, max: 100, get: () => I().opacity, set: (v, f) => this.editItem((x) => { x.opacity = v; }, f), begin: () => store.begin() }),
-        Field('Merge group', Select<string>([{ value: '', label: 'None' }, ...SH().groups.map((g) => ({ value: g.id, label: g.name }))], () => I().group ?? '', (v) => this.editItem((x) => { x.group = v || null; }))),
+        Toggle('Gooey — melts into nearby shapes', () => !!I().group, (v) => this.toggleGoo(v)),
+        More('shape-look', [
+          Field('Name', TextInput({ get: () => I().name, set: (v) => this.editItem((x) => { x.name = v || x.name; }) })),
+          Field('Fill', ColorField(() => I().color, (v, f) => this.editItem((x) => { x.color = v; }, f), () => store.begin())),
+          h('div', { class: 'row' },
+            Field('Stroke', ColorField(() => I().stroke, (v, f) => this.editItem((x) => { x.stroke = v; }, f), () => store.begin())),
+            Slider({ label: 'Width', min: 0, max: 40, step: 0.5, get: () => I().strokeW, set: (v, f) => this.editItem((x) => { x.strokeW = v; }, f), begin: () => store.begin() })),
+          Slider({ label: 'Opacity (%)', min: 0, max: 100, get: () => I().opacity, set: (v, f) => this.editItem((x) => { x.opacity = v; }, f), begin: () => store.begin() }),
+          Field('Merge group', Select<string>([{ value: '', label: 'None' }, ...SH().groups.map((g) => ({ value: g.id, label: g.name }))], () => I().group ?? '', (v) => this.editItem((x) => { x.group = v || null; }))),
+        ], 'Name, stroke, opacity, group'),
       ], { color: 'var(--lime)' }),
       this.keysSection(),
       this.behaviorsSection(),
@@ -465,6 +472,19 @@ export class ShapesStudio implements Studio {
     }
     this.sig = '';
     this.onState();
+  }
+
+  private exportOnlySel = false;
+  /** Gooey on: join (or create) the shared merge group; off: leave it. */
+  private toggleGoo(on: boolean) {
+    store.set((s) => {
+      const it = s.shapes.items.find((i) => i.id === s.shapes.sel);
+      if (!it) return;
+      if (!on) { it.group = null; return; }
+      let g = s.shapes.groups[0];
+      if (!g) { g = makeGroup(1, it.color); s.shapes.groups.push(g); }
+      it.group = g.id;
+    });
   }
 
   // ───────── morph into text / image ─────────

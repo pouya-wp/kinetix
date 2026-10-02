@@ -1,5 +1,6 @@
 import { store, type RenderState } from '../core/state';
 import { h, Section, Slider, Toggle, Seg, Btn, Field, NumInput, TextInput, Select, toast, refreshAll, onRefresh, modal, clear } from '../ui/kit';
+import { Flow, Step, More } from '../ui/flow';
 import { call, inAE, hasNode, chooseFolder, nodeRequire, openInExplorer } from '../core/ae-bridge';
 import { syncCompFromAE } from '../core/common-ui';
 import { PRESETS, resolve, ffmpegArgs, type RenderPreset, type Resolved } from './presets';
@@ -34,46 +35,34 @@ export class RenderStudio implements Studio {
     this.status = h('div', { class: 'hint' }, 'Ready.');
     this.ffStatus = h('div', { class: 'hint' });
 
-    const side = h('div', { class: 'side' },
-      this.compSection(),
-      this.outputSection(),
-      this.engineSection(),
-      this.reframeSection(),
-    );
-    // the render bar lives at the top of the main column so it is always visible
-    const what = h('div', { class: 'grow' });
+    // every preset is a toggle: pick one or several destinations, then one button renders them all
+    if (!R().batch.length) setR((r) => { r.batch = [r.preset]; });
+    const what = h('div', { class: 'hint' });
     onRefresh(what, () => {
-      const ids = this.multi ? R().batch : [R().preset];
-      const names = ids.map((id) => PRESETS.find((p) => p.id === id)?.label ?? id);
-      const eng = R().engine === 'ffmpeg' ? (this.ffmpegPath ? 'FFmpeg' : 'AE H.264 (FFmpeg not found)') : R().engine === 'ame' ? 'Media Encoder' : 'AE H.264';
-      what.innerHTML = '';
-      what.append(h('div', { style: { font: '700 16px var(--font-display)', textTransform: 'uppercase' } }, names.length > 1 ? `${names.length} presets` : names[0] ?? '—'),
-        h('div', { class: 'hint' }, `${S().comp.name} · ${eng}${names.length > 1 ? ' · ' + names.join(', ') : ''}`));
+      const names = R().batch.map((id) => PRESETS.find((p) => p.id === id)?.label ?? id);
+      const eng = R().engine === 'ffmpeg' ? (this.ffmpegPath ? 'best quality (FFmpeg)' : 'After Effects H.264') : R().engine === 'ame' ? 'Media Encoder' : 'After Effects H.264';
+      what.textContent = `${names.join(' + ')} · ${S().comp.name} · ${eng}`;
     });
-    const renderBar = h('div', { class: 'panel-card render-bar' },
-      h('div', { class: 'hstack', style: { flexWrap: 'wrap' } }, what,
-        Btn('Render now', () => this.renderAll(), { variant: 'primary', size: 'lg', icon: 'render' })),
+    const progress = h('div', { class: 'stack' },
+      what,
       h('div', { class: 'progress' }, this.bar),
       h('div', { class: 'hstack' }, h('div', { class: 'grow' }, this.status),
-        Btn('Cancel', () => this.cancel(), { size: 'sm', variant: 'danger' }),
+        Btn('Cancel', () => this.cancel(), { size: 'sm', variant: 'ghost' }),
         Btn('Open folder', () => this.openFolder(), { size: 'sm', icon: 'folder' })),
-      h('details', null, h('summary', { class: 'hint', style: { cursor: 'pointer' } }, 'Log'), this.logEl),
-    );
-    const main = h('div', { class: 'page-main' },
-      h('div', { class: 'page-head' },
-        h('div', { class: 'grow' },
-          h('div', { class: 'page-title' }, 'Export for every platform'),
-          h('div', { class: 'page-sub' }, 'Pick a destination, tweak if you like, and render in one click.'),
-        ),
-        Toggle('Batch mode', () => this.multi, (v) => { this.multi = v; if (v && !R().batch.length) setR((r) => { r.batch = [r.preset]; }); this.renderCards(); refreshAll(); }),
-      ),
-      renderBar,
-      this.cards,
-    );
-    const right = h('div', { class: 'side right', style: { width: '330px' } },
-      Section('Settings', [this.detail], { color: 'var(--lime)' }),
-    );
-    this.el = h('div', { class: 'view' }, side, main, right);
+      h('details', null, h('summary', { class: 'hint', style: { cursor: 'pointer' } }, 'Log'), this.logEl));
+    const body = [
+      Step(1, 'Where will you post it?', [this.cards], 'pick one or several'),
+      Step(2, 'Render', [progress]),
+      More('render-settings', [
+        this.compSection(), this.outputSection(), this.engineSection(), this.reframeSection(),
+        h('div', { class: 'lbl' }, 'Selected preset'), this.detail,
+      ], 'Settings: comp, folder, engine, sizes, bitrate'),
+    ];
+    this.multi = true;
+    this.el = Flow({
+      title: 'Render', sub: 'Pick where the video goes. Kinetix renders it with the best settings for that platform — several at once if you like.',
+      body, action: { label: 'Render', icon: 'render', need: 'comp', run: () => this.renderAll() },
+    }).el;
     this.renderCards();
     this.renderDetail();
     let sig = '';
@@ -166,7 +155,7 @@ export class RenderStudio implements Studio {
           p.badge ? h('span', { class: 'badge' + (p.platform === 'Master' ? ' gold' : ''), style: { position: 'absolute', right: '12px', bottom: '12px' } }, p.badge) : null,
         );
         card.addEventListener('click', () => {
-          if (this.multi) setR((rr) => { rr.batch = rr.batch.includes(p.id) ? rr.batch.filter((x) => x !== p.id) : [...rr.batch, p.id]; rr.preset = p.id; });
+          if (this.multi) setR((rr) => { const off = rr.batch.includes(p.id); if (off && rr.batch.length === 1) return; rr.batch = off ? rr.batch.filter((x) => x !== p.id) : [...rr.batch, p.id]; rr.preset = p.id; });
           else setR((rr) => { if (rr.preset !== p.id) { rr.preset = p.id; rr.over = { name: rr.over.name, quality: rr.over.quality }; } });
         });
         grid.appendChild(card);

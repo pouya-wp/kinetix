@@ -1,5 +1,5 @@
-import { h, Section, Slider, Seg, Btn, Toggle, toast, refreshAll, icon } from '../ui/kit';
-import { Page, Tiles, Group } from '../core/page';
+import { h, Slider, Seg, Btn, Toggle, toast, refreshAll, icon } from '../ui/kit';
+import { Flow, Step, More, Picks } from '../ui/flow';
 import { call, inAE } from '../core/ae-bridge';
 import { registerCommands } from '../core/commands';
 import { simplifyKeys } from '../core/math';
@@ -33,50 +33,46 @@ export class PhysicsStudio implements Studio {
     this.scrub = h('input', { type: 'range', min: '0', max: '100', value: '0', style: { flex: '1', accentColor: '#d1fe17' } }) as HTMLInputElement;
     this.scrub.addEventListener('input', () => { this.playing = false; this.frame = +this.scrub.value; this.draw(); });
 
-    const recipes = Tiles(RECIPES.map((r) => ({ id: r.id, label: r.label, sub: r.sub })), {
-      onPick: (x) => { const r = RECIPES.find((q) => q.id === x.id)!; Object.assign(p, { floor: true, walls: true, ceiling: false }, r.set ?? {}, { recipe: r.id }); save(); recipes.refresh(); refreshAll(); this.run(true); },
-      isOn: (x) => x.id === p.recipe, min: 132,
+    const recipes = Picks(RECIPES.map((r) => ({ id: r.id, label: r.label, sub: r.sub })), {
+      onPick: (x) => { const r = RECIPES.find((q) => q.id === x.id)!; Object.assign(p, { floor: true, walls: true, ceiling: false }, r.set ?? {}, { recipe: r.id }); save(); refreshAll(); this.run(true); this.playing = true; this.loop(); },
+      isOn: (x) => x.id === p.recipe, min: 130,
     });
     const playBtn = h('button', { class: 'play', title: 'Play / pause' }, icon('play'));
     playBtn.addEventListener('click', () => { this.playing = !this.playing; if (this.playing && this.res && this.frame >= this.res.frames.length - 1) this.frame = 0; this.loop(); });
-
-    const side = [
-      Section('Layers', [
-        Btn('Import selected layers', () => this.importLayers(), { variant: 'primary', block: true, icon: 'import' }),
+    const body = [
+      Step(1, 'Pick what happens', [recipes.el], 'select layers in AE first'),
+      Step(2, 'Preview & adjust', [
+        this.canvas,
+        h('div', { class: 'hstack' }, playBtn, this.scrub, Btn('Use selected layers', () => this.importLayers(), { size: 'sm', variant: 'soft', icon: 'import' })),
+        h('div', { class: 'row' },
+          Slider({ label: 'Bounciness', min: 0, max: 1.1, step: 0.01, get: () => p.bounce, set: (v, f) => set('bounce')(v, f) }),
+          Slider({ label: 'Gravity', min: -2, max: 3, step: 0.05, get: () => p.gravity, set: (v, f) => set('gravity')(v, f) })),
+      ]),
+      More('phys-adv', [
+        h('div', { class: 'lbl' }, 'Layers in the simulation'),
         this.list,
         Seg([{ value: 'auto', label: 'Exact shape' }, { value: 'box', label: 'Boxes' }, { value: 'circle', label: 'Circles' }], () => p.shape, (v) => set('shape')(v)),
-        h('div', { class: 'hint' }, 'Shape layers collide with their exact outline — concave and custom paths too — and morphing shapes keep colliding correctly as their path changes. Text and footage use their bounds.'),
-      ], { color: 'var(--lime)' }),
-    ];
-    const main = [
-      h('div', { class: 'panel-card' },
-        this.canvas,
-        h('div', { class: 'hstack' }, playBtn, this.scrub),
         h('div', { class: 'row' },
-          Btn('Simulate', () => this.run(true), { icon: 'sync' }),
-          Btn('Bake to keyframes', () => this.bake(), { variant: 'primary', icon: 'send' })),
-        h('div', { class: 'hint' }, 'Baking writes Position + Rotation keyframes starting at the playhead, plus “KX:hit” markers at every collision for Auto-SFX.')),
-      Group('Recipes', [recipes.el]),
+          Slider({ label: 'Friction', min: 0, max: 1, step: 0.01, get: () => p.friction, set: (v, f) => set('friction')(v, f) }),
+          Slider({ label: 'Air drag', min: 0, max: 0.2, step: 0.002, get: () => p.air, set: (v, f) => set('air')(v, f) })),
+        h('div', { class: 'row' },
+          Slider({ label: 'Strength', min: 0.1, max: 4, step: 0.05, get: () => p.strength, set: (v, f) => set('strength')(v, f) }),
+          Slider({ label: 'Duration', min: 0.5, max: 20, step: 0.1, unit: ' s', get: () => p.duration, set: (v, f) => set('duration')(v, f) })),
+        h('div', { class: 'row' },
+          Slider({ label: 'Variation (seed)', min: 1, max: 999, get: () => p.seed, set: (v, f) => set('seed')(v, f) }),
+          Slider({ label: 'Floor raise', min: 0, max: 800, unit: ' px', get: () => p.floorOffset, set: (v, f) => set('floorOffset')(v, f) })),
+        h('div', { class: 'row wrap' },
+          Toggle('Random spin', () => p.spin, (v) => set('spin')(v)),
+          Toggle('Floor', () => p.floor, (v) => set('floor')(v)),
+          Toggle('Side walls', () => p.walls, (v) => set('walls')(v)),
+          Toggle('Ceiling', () => p.ceiling, (v) => set('ceiling')(v))),
+        h('div', { class: 'hint' }, 'Shape layers collide with their exact outline (concave, custom and morphing paths too). Text and footage use their bounds. Hits are marked for Auto sound.'),
+      ], 'Fine control'),
     ];
-    const right = [
-      Section('Physics', [
-        Slider({ label: 'Gravity', min: -2, max: 3, step: 0.05, get: () => p.gravity, set: (v, f) => set('gravity')(v, f) }),
-        Slider({ label: 'Bounciness', min: 0, max: 1.1, step: 0.01, get: () => p.bounce, set: (v, f) => set('bounce')(v, f) }),
-        Slider({ label: 'Friction', min: 0, max: 1, step: 0.01, get: () => p.friction, set: (v, f) => set('friction')(v, f) }),
-        Slider({ label: 'Air drag', min: 0, max: 0.2, step: 0.002, get: () => p.air, set: (v, f) => set('air')(v, f) }),
-        Slider({ label: 'Strength', min: 0.1, max: 4, step: 0.05, get: () => p.strength, set: (v, f) => set('strength')(v, f) }),
-        Slider({ label: 'Duration (s)', min: 0.5, max: 20, step: 0.1, get: () => p.duration, set: (v, f) => set('duration')(v, f) }),
-        Slider({ label: 'Seed', min: 1, max: 999, get: () => p.seed, set: (v, f) => set('seed')(v, f) }),
-        Toggle('Random spin', () => p.spin, (v) => set('spin')(v)),
-      ], { color: 'var(--lime)' }),
-      Section('World', [
-        Toggle('Floor', () => p.floor, (v) => set('floor')(v)),
-        Slider({ label: 'Floor raise (px)', min: 0, max: 800, get: () => p.floorOffset, set: (v, f) => set('floorOffset')(v, f) }),
-        Toggle('Side walls', () => p.walls, (v) => set('walls')(v)),
-        Toggle('Ceiling', () => p.ceiling, (v) => set('ceiling')(v)),
-      ], { color: 'var(--info)' }),
-    ];
-    this.el = Page({ title: 'Physics', sub: 'Real rigid-body physics for any layer — pick a recipe, preview, bake. That simple.', side, main, right }).el;
+    this.el = Flow({
+      title: 'Physics', sub: 'Select layers in After Effects, pick what should happen, press the button. Real physics, written as normal keyframes.',
+      body, action: { label: 'Add physics to selected layers', icon: 'send', need: 'layers', run: async () => { if (inAE) await this.importLayers(); await this.bake(); } },
+    }).el;
     registerCommands(RECIPES.map((r) => ({ id: 'phys.' + r.id, label: 'Physics: ' + r.label, group: 'Physics', run: () => { Object.assign(p, r.set ?? {}, { recipe: r.id }); this.importLayers().then(() => this.bake()); } })));
     if (!inAE) this.demo();
   }

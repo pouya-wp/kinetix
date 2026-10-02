@@ -11,6 +11,7 @@ import { parseSRT, gapInfo } from './plan';
 import { buildTextPayload } from './export';
 import { call, inAE } from '../core/ae-bridge';
 import type { Poly } from '../shapes/geometry';
+import { ActionBar, More } from '../ui/flow';
 import type { Studio } from '../main';
 
 const S = () => store.state;
@@ -67,15 +68,17 @@ export class TextStudio implements Studio {
     this.linesBox = h('div', { class: 'lines' });
     this.progress = h('div', { class: 'progress', style: { display: 'none' } }, h('div', { style: { width: '0%' } }));
     this.right = h('div', { class: 'side right' });
+    const fold = <T extends HTMLElement>(el: T) => { el.classList.add('collapsed'); return el; };
     const left = h('div', { class: 'side' },
-      SceneSection(),
       this.sourceSection(),
       this.fontSection(),
-      this.timingSection(),
-      CompSection({ duration: true }),
-      ViewSection(),
-      GuideSection(),
-      this.buildSection(),
+      h('div', { class: 'insp-slot' }),
+      fold(this.timingSection()),
+      fold(SceneSection()),
+      fold(CompSection({ duration: true })),
+      fold(ViewSection()),
+      fold(GuideSection()),
+      fold(this.buildSection()),
     );
     const stage = h('div', { class: 'stage' },
       h('div', { class: 'stage-top' }, h('div', { class: 'toolbar' },
@@ -84,8 +87,9 @@ export class TextStudio implements Studio {
         h('button', { class: 'btn btn-sm', title: 'Redo', onclick: () => store.redo() }, icon('redo')),
       ), this.vp.zoomEl),
       this.vp.el,
-      h('div', { class: 'stage-hint', style: { bottom: '68px' } }, 'Select subtitle text layers in AE and press Analyze · lime ranges = transitions, red = gaps · Space to preview'),
+      h('div', { class: 'stage-hint', style: { bottom: '128px' } }, 'Select subtitle text layers in AE and press Analyze · lime ranges = transitions, red = gaps · Space to preview'),
       this.transport.el,
+      ActionBar({ label: 'Build in After Effects', icon: 'send', need: 'comp', run: () => this.build() }),
     );
     this.el = h('div', { class: 'view' }, left, stage, this.right);
     this.buildInspector();
@@ -252,9 +256,8 @@ export class TextStudio implements Studio {
   }
 
   private buildSection() {
-    return Section('Build', [
+    return Section('Build options', [
       Toggle('Disable original text layers', () => T().disableOriginals, (v) => store.set((s) => { s.text.disableOriginals = v; })),
-      Btn('Build Text Morph precomp', () => this.build(), { variant: 'primary', size: 'lg', block: true, icon: 'send' }),
       this.progress,
       h('div', { class: 'hint' }, 'Creates a TextMorph precomp (text + Controls null) and, right under it in your comp, a separate KX TextBox layer with its own size/roundness sliders — make it an adjustment layer or add any effect.'),
     ], { color: 'var(--lime)' });
@@ -276,9 +279,10 @@ export class TextStudio implements Studio {
     queueMicrotask(markCards);
 
     this.right.append(
-      Section('Presets', [Chips(PRESETS.map((p) => ({ value: p.id, label: p.label })), () => '', (v) => { store.set((s) => PRESETS.find((p) => p.id === v)!.apply(s.text)); toast('Preset applied'); })], { color: 'var(--violet)' }),
-      Section('Morph style', [
+      Section('1 · Quick looks', [Chips(PRESETS.map((p) => ({ value: p.id, label: p.label })), () => '', (v) => { store.set((s) => PRESETS.find((p) => p.id === v)!.apply(s.text)); toast('Preset applied'); })], { color: 'var(--violet)' }),
+      Section('2 · Morph style', [
         cards,
+        More('text-style-adv', [
         Toggle('Random style per transition', () => t().randomize, (v) => set((x) => { x.randomize = v; })),
         Slider({ label: 'Random seed', min: 1, max: 999, get: () => t().seed, set: (v, f) => set((x) => { x.seed = v; }, f), begin: () => store.begin() }),
         Slider({ label: 'Stagger', min: 0, max: 0.9, step: 0.01, get: () => t().stagger, set: (v, f) => set((x) => { x.stagger = v; }, f), begin: () => store.begin() }),
@@ -288,8 +292,9 @@ export class TextStudio implements Studio {
         Toggle('Case-sensitive letter matching', () => t().caseSensitive, (v) => set((x) => { x.caseSensitive = v; })),
         Field('Text colour', ColorField(() => t().textColor, (v, f) => set((x) => { x.textColor = v; }, f), () => store.begin())),
         Swatches((c) => set((x) => { x.textColor = c; })),
+        ], 'Fine control'),
       ], { color: 'var(--lime)' }),
-      Section('Text box', [
+      Section('3 · Text box', [
         Toggle('Background box', () => t().boxOn, (v) => set((x) => { x.boxOn = v; })),
         Chips((Object.keys(BOX_INFO) as BoxStyle[]).map((b) => ({ value: b, label: BOX_INFO[b] })), () => t().box.style, (v) => set((x) => { x.box.style = v; x.boxOn = true; })),
         h('div', { class: 'row' },
@@ -305,7 +310,7 @@ export class TextStudio implements Studio {
         Slider({ label: 'Damping', min: 1, max: 60, step: 0.5, get: () => t().box.damping, set: (v, f) => set((x) => { x.box.damping = v; }, f), begin: () => store.begin() }),
         Slider({ label: 'Intensity', min: 0, max: 3, step: 0.01, get: () => t().box.intensity, set: (v, f) => set((x) => { x.box.intensity = v; }, f), begin: () => store.begin() }),
         Slider({ label: 'Follow lag (s)', min: 0, max: 0.4, step: 0.005, get: () => t().box.lag, set: (v, f) => set((x) => { x.box.lag = v; }, f), begin: () => store.begin() }),
-      ], { color: 'var(--info)' }),
+      ], { color: 'var(--info)', collapsed: true }),
     );
   }
 

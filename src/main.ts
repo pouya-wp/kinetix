@@ -36,18 +36,29 @@ const LOGO = `<svg viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width
 
 interface SectionDef { id: string; label: string; title: string; icon: keyof typeof I; make: () => Studio; isNew?: boolean; sep?: boolean }
 const SECTIONS: SectionDef[] = [
-  { id: 'camera', label: 'Camera', title: '3D Camera', icon: 'camera', make: () => new CameraStudio(), isNew: true },
-  { id: 'animate', label: 'Animate', title: 'Animate · Ease · In/Out', icon: 'animate', make: () => new AnimateStudio(), isNew: true },
-  { id: 'type', label: 'Type', title: 'Type Animator', icon: 'type', make: () => new TypeStudio(), isNew: true },
-  { id: 'physics', label: 'Physics', title: 'Physics', icon: 'physics', make: () => new PhysicsStudio(), isNew: true, sep: true },
+  { id: 'camera', label: 'Camera', title: '3D Camera', icon: 'camera', make: () => new CameraStudio() },
+  { id: 'animate', label: 'Animate', title: 'Animate · Ease · In/Out', icon: 'animate', make: () => new AnimateStudio() },
+  { id: 'type', label: 'Type', title: 'Type Animator', icon: 'type', make: () => new TypeStudio() },
+  { id: 'physics', label: 'Physics', title: 'Physics', icon: 'physics', make: () => new PhysicsStudio(), sep: true },
   { id: 'bounce', label: 'Bounce', title: 'Bounce', icon: 'bounce', make: () => new BounceStudio() },
   { id: 'shapes', label: 'Shapes', title: 'Shapes & Morph', icon: 'shapes', make: () => new ShapesStudio() },
   { id: 'text', label: 'Text Morph', title: 'Text Morph', icon: 'text', make: () => new TextStudio(), sep: true },
-  { id: 'style', label: 'Style', title: 'Styles & Gradients', icon: 'style', make: () => new StyleStudio(), isNew: true },
-  { id: 'sound', label: 'Sound', title: 'Sound Lab', icon: 'sound', make: () => new SoundStudio(), isNew: true },
-  { id: 'brand', label: 'Brand', title: 'Brand Kit', icon: 'brand', make: () => new BrandStudio(), isNew: true, sep: true },
+  { id: 'style', label: 'Style', title: 'Styles & Gradients', icon: 'style', make: () => new StyleStudio() },
+  { id: 'sound', label: 'Sound', title: 'Sound Lab', icon: 'sound', make: () => new SoundStudio() },
+  { id: 'brand', label: 'Brand', title: 'Brand Kit', icon: 'brand', make: () => new BrandStudio(), sep: true },
   { id: 'render', label: 'Render', title: 'Render', icon: 'render', make: () => new RenderStudio() },
 ];
+
+/** Editors: below 1180px the inspector lives inside the left column (no hidden drawer). */
+function placeInspector(view: HTMLElement) {
+  const right = view.querySelector<HTMLElement>(':scope > .side.right, .insp-slot > .side.right');
+  const slot = view.querySelector<HTMLElement>('.insp-slot');
+  if (!right || !slot) return;
+  const narrow = window.innerWidth <= 1180;
+  if (narrow && right.parentElement !== slot) slot.appendChild(right);
+  if (!narrow && right.parentElement === slot) view.appendChild(right);
+}
+window.addEventListener('resize', () => document.querySelectorAll<HTMLElement>('.view').forEach(placeInspector));
 
 function boot() {
   installGlobalHandlers();
@@ -86,11 +97,14 @@ function boot() {
       built.set(def.id, next);
       area.appendChild(next.el);
     }
+    placeInspector(next.el);
     if (active && active !== next) active.deactivate();
     active = next;
     for (const s of built.values()) s.el.classList.toggle('active', s === next);
     btns.forEach((b, i) => b.classList.toggle('active', SECTIONS[i].id === def.id));
     title.textContent = def.title;
+    // single-column pages have no inspector drawer
+    document.querySelector<HTMLElement>('.inspector-toggle')?.style.setProperty('display', next.el.classList.contains('flow-view') ? 'none' : '');
     clock.pause();
     next.activate();
     try { localStorage.setItem('kinetix.tab', def.id); } catch { /* */ }

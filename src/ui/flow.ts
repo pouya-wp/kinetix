@@ -113,7 +113,8 @@ export function Tabs<T extends string>(items: { id: T; label: string }[], get: (
 
 /** Big pickable tiles; `multi` lets several be on at once. Returns a refresh function. */
 export function Picks<T extends { id: string; label: string; sub?: string }>(items: T[], o: { isOn: (t: T) => boolean; onPick: (t: T) => void; preview?: (t: T) => Node | null; extra?: (t: T) => Node | null; min?: number }) {
-  const el = h('div', { class: 'big-tiles', style: o.min ? { gridTemplateColumns: `repeat(auto-fill, minmax(${o.min}px, 1fr))` } : undefined });
+  const el = h('div', { class: 'big-tiles' });
+  if (o.min) el.style.setProperty('--min', o.min + 'px');
   const tiles = items.map((t) => {
     const tile = h('div', { class: 'pick', title: t.sub ?? '' },
       h('span', { class: 'pick-check' }, '✓'),
