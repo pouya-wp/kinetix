@@ -180,13 +180,14 @@ export function Slider(o: SliderOpts) {
     track.setPointerCapture(e.pointerId);
     root.classList.add('dragging');
     o.begin?.();
-    o.set(fromX(e.clientX), false);
-    const move = (ev: PointerEvent) => o.set(fromX(ev.clientX), false);
+    o.set(fromX(e.clientX), false); show();
+    const move = (ev: PointerEvent) => { o.set(fromX(ev.clientX), false); show(); };
     const up = (ev: PointerEvent) => {
       root.classList.remove('dragging');
       track.removeEventListener('pointermove', move);
       track.removeEventListener('pointerup', up);
       o.set(fromX(ev.clientX), true);
+      refreshAll();
     };
     track.addEventListener('pointermove', move);
     track.addEventListener('pointerup', up);
@@ -200,18 +201,20 @@ export function Slider(o: SliderOpts) {
     const move = (ev: PointerEvent) => {
       const k = ev.shiftKey ? 0.1 : ev.ctrlKey ? 4 : 1;
       o.set(clampHard(quant(v0 + ((ev.clientX - x0) / 240) * range * k)), false);
+      show();
     };
     const up = () => {
       lbl.removeEventListener('pointermove', move);
       lbl.removeEventListener('pointerup', up);
       o.set(o.get(), true);
+      refreshAll();
     };
     lbl.addEventListener('pointermove', move);
     lbl.addEventListener('pointerup', up);
   });
   const commitText = () => {
     const n = parseFloat(val.value);
-    if (!isNaN(n)) { o.begin?.(); o.set(clampHard(n), true); }
+    if (!isNaN(n)) { o.begin?.(); o.set(clampHard(n), true); refreshAll(); }
     val.value = fmt(o.get());
   };
   val.addEventListener('keydown', (e) => {
@@ -223,6 +226,7 @@ export function Slider(o: SliderOpts) {
       const d = (e.key === 'ArrowUp' ? 1 : -1) * step * (e.shiftKey ? 10 : 1);
       o.begin?.();
       o.set(clampHard(quant(o.get() + d)), true);
+      refreshAll();
       val.value = fmt(o.get());
     }
   });
@@ -267,7 +271,7 @@ export function TextInput(o: { get: () => string; set: (v: string) => void; plac
 
 export function Toggle(label: string, get: () => boolean, set: (v: boolean) => void) {
   const el = h('div', { class: 'toggle' }, h('span', null, label), h('span', { class: 'sw' }));
-  el.addEventListener('click', () => set(!get()));
+  el.addEventListener('click', () => { set(!get()); refreshAll(); });
   onRefresh(el, () => el.classList.toggle('on', get()));
   return el;
 }
@@ -276,7 +280,7 @@ export function Seg<T extends string>(options: { value: T; label: string; title?
   const el = h('div', { class: 'seg' });
   const btns = options.map((o) => {
     const b = h('button', { title: o.title ?? '' }, o.label);
-    b.addEventListener('click', () => set(o.value));
+    b.addEventListener('click', () => { set(o.value); refreshAll(); });
     el.appendChild(b);
     return b;
   });
@@ -288,7 +292,7 @@ export function Chips<T extends string>(options: { value: T; label: string }[], 
   const el = h('div', { class: 'chips' });
   const btns = options.map((o) => {
     const b = h('button', { class: 'chip' }, o.label);
-    b.addEventListener('click', () => set(o.value));
+    b.addEventListener('click', () => { set(o.value); refreshAll(); });
     el.appendChild(b);
     return b;
   });
@@ -301,7 +305,7 @@ export function Chips<T extends string>(options: { value: T; label: string }[], 
 
 export function Select<T extends string>(options: { value: T; label: string }[], get: () => T, set: (v: T) => void) {
   const el = h('select', { class: 'input' }, ...options.map((o) => h('option', { value: o.value }, o.label)));
-  el.addEventListener('change', () => set(el.value as T));
+  el.addEventListener('change', () => { set(el.value as T); refreshAll(); });
   onRefresh(el, () => { el.value = get(); });
   return el;
 }
