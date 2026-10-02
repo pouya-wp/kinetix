@@ -533,6 +533,7 @@ KX.textBegin = function (h) {
   KX._slider(ctl, 'Text Opacity', 100);
   // all text lives in a source comp so the whole text can be re-timed (Timewarp) and coloured at once
   var sc = app.project.items.addComp(h.name + ' Text', main.width, main.height, main.pixelAspect, dur, main.frameRate);
+  sc.comment = 'kinetix-text-source';
   KX._textMain = main.id;
   app.endUndoGroup();
   return { compId: pc.id, srcId: sc.id };
@@ -856,4 +857,59 @@ KX.listTemplates = function () {
   var t = KX._templates(it.outputModule(1));
   it.remove();
   return t;
+};
+
+
+// --------- Fonts & live text style ---------
+/** Installed fonts (AE 2024+ exposes app.fonts). */
+KX.listFonts = function () {
+  var out = [];
+  try {
+    var fams = app.fonts.allFonts;
+    for (var i = 0; i < fams.length; i++) {
+      var fam = fams[i];
+      for (var k = 0; k < fam.length; k++) out.push({ ps: fam[k].postScriptName, family: fam[k].familyName, style: fam[k].styleName });
+    }
+  } catch (e) {}
+  return out;
+};
+
+KX._styleText = function (L, st) {
+  var prop = L.property('ADBE Text Properties').property('ADBE Text Document');
+  var apply = function (td) {
+    if (st.font) td.font = st.font;
+    if (st.size > 0) td.fontSize = st.size;
+    if (st.tracking !== null && st.tracking !== undefined) td.tracking = st.tracking;
+    if (st.caps !== null && st.caps !== undefined) td.allCaps = !!st.caps;
+    return td;
+  };
+  if (prop.numKeys > 0) {
+    for (var k = 1; k <= prop.numKeys; k++) prop.setValueAtKey(k, apply(prop.keyValue(k)));
+  } else prop.setValue(apply(prop.value));
+};
+
+/**
+ * Apply font / size / tracking / caps.
+ * target 'selected' = selected text layers in the active comp,
+ * target 'built' = every line inside Kinetix text-source comps (live Liquid Glass updates).
+ */
+KX.textApplyStyle = function (st) {
+  app.beginUndoGroup('Kinetix Font');
+  var n = 0, comps = [];
+  if (st.target === 'built') {
+    for (var i = 1; i <= app.project.numItems; i++) {
+      var it = app.project.item(i);
+      if (it instanceof CompItem && it.comment === 'kinetix-text-source') comps.push(it);
+    }
+    if (!comps.length) throw new Error('No built Text Morph found - build one first.');
+    for (var c = 0; c < comps.length; c++)
+      for (var l = 1; l <= comps[c].numLayers; l++) if (comps[c].layer(l) instanceof TextLayer) { KX._styleText(comps[c].layer(l), st); n++; }
+  } else {
+    var comp = KX._comp(null, false);
+    var sel = comp.selectedLayers;
+    for (var s2 = 0; s2 < sel.length; s2++) if (sel[s2] instanceof TextLayer) { KX._styleText(sel[s2], st); n++; }
+    if (!n) throw new Error('Select text layers first.');
+  }
+  app.endUndoGroup();
+  return { layers: n, comps: comps.length };
 };

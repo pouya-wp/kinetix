@@ -17,3 +17,9 @@ registerMock('textBaked', (_id: number, b: any) => { console.log('[mock] textBak
 registerMock('textBox', (_id: number, b: any) => { console.log('[mock] textBox', b.kind); return true; });
 registerMock('textFinish', () => true);
 registerMock('defaultRenderFolder', () => 'C:/Users/You/Videos/Kinetix Renders');
+registerMock('listFonts', () => [
+  { ps: 'Inter-Bold', family: 'Inter', style: 'Bold' }, { ps: 'Arial-BoldMT', family: 'Arial', style: 'Bold' },
+  { ps: 'Georgia', family: 'Georgia', style: 'Regular' }, { ps: 'Impact', family: 'Impact', style: 'Regular' },
+  { ps: 'Verdana-Bold', family: 'Verdana', style: 'Bold' }, { ps: 'CourierNewPS-BoldMT', family: 'Courier New', style: 'Bold' },
+]);
+registerMock('textApplyStyle', (st: any) => ({ layers: st.target === 'built' ? 12 : 3, comps: 1 }));

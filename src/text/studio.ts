@@ -3,7 +3,7 @@ import { Viewport } from '../core/viewport';
 import { clock } from '../core/clock';
 import { Transport } from '../core/transport';
 import { SceneSection, CompSection, ViewSection, GuideSection } from '../core/common-ui';
-import { h, Section, Slider, Toggle, Seg, Btn, ColorField, Swatches, TextInput, Field, clear, toast, icon, refreshAll, pickFile, Chips } from '../ui/kit';
+import { h, Section, Slider, Toggle, Seg, Btn, ColorField, Swatches, TextInput, Field, clear, toast, icon, refreshAll, pickFile, Chips, onRefresh } from '../ui/kit';
 import { uid, type Vec } from '../core/math';
 import { TextEngine, worldContours } from './engine';
 import { rasterLine, glyphsFromAE, type LineGeo, type AEGlyphGroup } from './glyphs';
@@ -70,6 +70,7 @@ export class TextStudio implements Studio {
     const left = h('div', { class: 'side' },
       SceneSection(),
       this.sourceSection(),
+      this.fontSection(),
       this.timingSection(),
       CompSection({ duration: true }),
       ViewSection(),
@@ -172,6 +173,54 @@ export class TextStudio implements Studio {
       row.addEventListener('click', () => { store.silent((s) => { s.text.sel = l.id; }); clock.pause(); clock.seek(l.t0 + 0.01); });
       box.appendChild(row);
     });
+  }
+
+  private fonts: { ps: string; family: string; style: string }[] = [];
+  private fontSection() {
+    const f = () => T().font;
+    const setF = (fn: (x: TextState['font']) => void, fin = true) => store.set((s) => fn(s.text.font), fin);
+    const list = h('datalist', { id: 'kx-fonts' });
+    const input = h('input', { class: 'input', list: 'kx-fonts', placeholder: 'Search fonts… (empty = keep)', spellcheck: false }) as HTMLInputElement;
+    const label = (x: { family: string; style: string }) => `${x.family} — ${x.style}`;
+    const load = async () => {
+      try {
+        this.fonts = await call('listFonts');
+        list.innerHTML = '';
+        for (const x of this.fonts) list.appendChild(h('option', { value: label(x) }));
+        if (!this.fonts.length) toast('This After Effects version does not list fonts — type the PostScript name instead', 'info', 6000);
+      } catch (e: any) { toast(e.message, 'err'); }
+    };
+    input.addEventListener('focus', () => { if (!this.fonts.length) load(); });
+    input.addEventListener('keydown', (e) => e.stopPropagation());
+    input.addEventListener('change', async () => {
+      if (!this.fonts.length) await load();
+      const v = input.value.trim();
+      const hit = this.fonts.find((x) => label(x) === v) ?? this.fonts.find((x) => x.ps === v || x.family.toLowerCase() === v.toLowerCase());
+      setF((x) => { x.ps = hit ? hit.ps : v; x.family = hit ? hit.family : v.split(' — ')[0]; });
+    });
+    onRefresh(input, () => { if (document.activeElement !== input) { const x = this.fonts.find((q) => q.ps === f().ps); input.value = x ? label(x) : f().ps; } });
+    return Section('Font & style', [
+      Field('Font', h('div', null, input, list)),
+      h('div', { class: 'row' },
+        Slider({ label: 'Size (0 = keep)', min: 0, max: 300, get: () => f().size, set: (v, fin) => setF((x) => { x.size = v; }, fin), begin: () => store.begin() }),
+        Slider({ label: 'Tracking', min: -200, max: 800, step: 5, get: () => f().tracking, set: (v, fin) => setF((x) => { x.tracking = v; }, fin), begin: () => store.begin() })),
+      Toggle('ALL CAPS', () => f().caps, (v) => setF((x) => { x.caps = v; })),
+      h('div', { class: 'row' },
+        Btn('Selected layers', () => this.applyFont('selected'), { size: 'sm', title: 'Apply to the selected text layers (before building)' }),
+        Btn('Built morph (live)', () => this.applyFont('built'), { size: 'sm', variant: 'soft', title: 'Change the font of an existing Liquid Glass morph — it updates live' })),
+      h('div', { class: 'hint' }, 'Liquid Glass morphs use live text, so you can change the font any time after building. Other styles bake letter outlines — rebuild after a font change.'),
+    ], { color: 'var(--violet)' });
+  }
+
+  private async applyFont(target: 'selected' | 'built') {
+    const f = T().font;
+    try {
+      const r = await call<{ layers: number }>('textApplyStyle', { target, font: f.ps || null, size: f.size, tracking: f.tracking, caps: f.caps });
+      // keep the panel preview in sync
+      this.geos.clear();
+      store.set((s) => s.text.lines.forEach((l) => { if (f.family) l.font = f.family; if (f.size > 0) l.size = f.size; }));
+      toast(`Font applied to ${r.layers} layer(s)` + (target === 'built' ? ' — morph updates live' : ' — press Analyze again before building'));
+    } catch (e: any) { toast(e.message, 'err', 6000); }
   }
 
   private timingSection() {
